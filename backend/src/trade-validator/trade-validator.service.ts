@@ -34,10 +34,13 @@ export class TradeValidatorService {
     const cfg = this.config.get();
     const reasons = [...analysis.reasons];
 
-    // Normalise momentum score to 0-100
-    // momentum.score is in % units — clamp ±2% = 0/100
+    // Normalise momentum score to 0-100.
+    // momentum.score is the weighted % change across timeframes.
+    // Treat ±1% as full score (100 pts); values above are clamped.
+    // Previous divisor of 2 required a 2% move for 100 pts, leaving most
+    // legitimate signals bunched at 25-50 pts with poor differentiation.
     const rawMomentum = Math.abs(momentum.score);
-    const momentumScore = Math.min(rawMomentum / 2 * 100, 100);
+    const momentumScore = Math.min(rawMomentum * 100, 100);
 
     // Weighted final score
     const tradeScore =

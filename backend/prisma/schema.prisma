@@ -207,3 +207,19 @@ model Notification {
   read      Boolean  @default(false)
   createdAt DateTime @default(now())
 }
+
+model BotLog {
+  id        BigInt   @id @default(autoincrement())
+  createdAt DateTime @default(now())
+  level     String   // INFO | WARN | ERROR
+  category  String   // BOT | POSITION | RISK | SYSTEM
+  event     String   // BOT_STARTED, POSITION_OPENED, etc.
+  symbol    String?
+  message   String
+  metadata  String?  // JSON blob
+
+  @@index([createdAt])
+  @@index([category, createdAt])
+  @@index([symbol, createdAt])
+  @@index([level, createdAt])
+}

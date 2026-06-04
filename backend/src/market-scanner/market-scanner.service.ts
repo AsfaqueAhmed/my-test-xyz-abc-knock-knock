@@ -30,6 +30,7 @@ export class MarketScannerService implements OnModuleInit, OnModuleDestroy {
 
   // all known USDT perp symbols (fetched from Binance on startup)
   private allSymbols: string[] = [];
+  private allSymbolsSet: Set<string> = new Set();
   private tokenNames: Map<string, string> = new Map();
 
   private ws: WebSocket | null = null;
@@ -111,6 +112,7 @@ export class MarketScannerService implements OnModuleInit, OnModuleDestroy {
     const next = new Set(symbols.map(s => s.symbol));
 
     this.allSymbols = symbols.map(s => s.symbol).sort();
+    this.allSymbolsSet = new Set(this.allSymbols);
 
     for (const { symbol, baseAsset } of symbols) {
       this.tokenNames.set(symbol, baseAsset);
@@ -248,9 +250,10 @@ export class MarketScannerService implements OnModuleInit, OnModuleDestroy {
         updatedAt: Date.now(),
       });
 
-      // Add to allSymbols if newly seen
-      if (!this.allSymbols.includes(t.s)) {
+      // Add to allSymbols if newly seen (O(1) Set lookup instead of O(n) includes)
+      if (!this.allSymbolsSet.has(t.s)) {
         this.allSymbols.push(t.s);
+        this.allSymbolsSet.add(t.s);
         this.tokenNames.set(t.s, this.deriveTokenName(t.s));
         this.priceHistory.set(t.s, []);
         this.logger.log(`New symbol discovered: ${t.s}`);
@@ -300,13 +303,20 @@ export class MarketScannerService implements OnModuleInit, OnModuleDestroy {
   getPriceAt(symbol: string, targetMs: number): number | null {
     const history = this.priceHistory.get(symbol);
     if (!history || history.length === 0) return null;
-    // Find the snapshot closest to targetMs (but not after it)
+    // Return the most recent snapshot at or before targetMs.
     let best: PriceSnapshot | null = null;
     for (const snap of history) {
-      if (snap.timestamp <= targetMs) best = snap;
-      else break;
+      if (snap.timestamp > targetMs) break;
+      best = snap;
     }
     return best?.price ?? null;
+  }
+
+  getPriceByIndex(symbol: string, stepsBack: number): number | null {
+    const history = this.priceHistory.get(symbol);
+    if (!history || history.length === 0) return null;
+    const idx = history.length - 1 - stepsBack;
+    return idx >= 0 ? history[idx].price : null;
   }
 
   getCurrentPrice(symbol: string): number {

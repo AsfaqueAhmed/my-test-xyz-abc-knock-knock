@@ -88,6 +88,28 @@ export async function fetchNotifications() {
   return data;
 }
 
+export async function fetchLogs(params?: {
+  limit?: number;
+  category?: string;
+  level?: string;
+  symbol?: string;
+  event?: string;
+}) {
+  const { data } = await api.get('/logs', { params });
+  return data as BotLog[];
+}
+
+export interface BotLog {
+  id: string;
+  createdAt: string;
+  level: 'INFO' | 'WARN' | 'ERROR';
+  category: 'BOT' | 'POSITION' | 'RISK' | 'SYSTEM';
+  event: string;
+  symbol: string | null;
+  message: string;
+  metadata: Record<string, unknown> | null;
+}
+
 export async function botStart() { return api.post('/bot/start'); }
 export async function botStop() { return api.post('/bot/stop'); }
 export async function botPause() { return api.post('/bot/pause'); }

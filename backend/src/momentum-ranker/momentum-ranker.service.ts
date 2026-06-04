@@ -56,6 +56,12 @@ export class MomentumRankerService {
     const cfg = this.config.get();
     const now = Date.now();
     const symbols = this.scanner.getAllSymbols();
+    const symbolSet = new Set(symbols);
+
+    // Prune scores for symbols that have been removed from the exchange
+    for (const sym of this.lastScores.keys()) {
+      if (!symbolSet.has(sym)) this.lastScores.delete(sym);
+    }
 
     const scores: MomentumScore[] = [];
 
@@ -103,7 +109,8 @@ export class MomentumRankerService {
     if (!currentPrice) return null;
 
     const get = (msAgo: number): number | null =>
-      this.scanner.getPriceAt(symbol, now - msAgo);
+      this.scanner.getPriceAt(symbol, now - msAgo) ??
+      this.scanner.getPriceByIndex(symbol, Math.round(msAgo / cfg.scanIntervalMs));
 
     const pct = (past: number | null): number => {
       if (!past || past === 0) return 0;
@@ -233,20 +240,22 @@ export class MomentumRankerService {
     }
   }
 
-  // Reset consecutive counter for symbols that dropped out of top 10
+  // Track which symbols are currently in the top list (for logging only).
+  // We deliberately do NOT reset consecutiveFailures here: a symbol that briefly
+  // drops off the list and comes back should not get a free reset — failures must
+  // accumulate until the symbol either passes validation (recordPass) or hits the
+  // threshold and enters cooldown (recordFailure).
   private updateFalseAlarmCounters(
     bullishSymbols: string[],
     bearishSymbols: string[],
-    turn: number,
+    _turn: number,
   ) {
     const inTop = new Set([...bullishSymbols, ...bearishSymbols]);
-
     for (const [symbol, fa] of this.falseAlarms) {
       if (!inTop.has(symbol) && fa.consecutiveFailures > 0) {
-        // Symbol left top 10 — reset consecutive counter
-        fa.consecutiveFailures = 0;
-        fa.lastUpdatedTurn = turn;
-        this.falseAlarms.set(symbol, fa);
+        this.logger.debug(
+          `${symbol} left top list with ${fa.consecutiveFailures} pending failures (not reset)`,
+        );
       }
     }
   }

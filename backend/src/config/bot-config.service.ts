@@ -57,6 +57,8 @@ export interface BotConfiguration {
 
   paperTrading: boolean;
   tradingEnabled: boolean;
+  botRunning: boolean;
+  botPaused: boolean;
 }
 
 const DEFAULTS: BotConfiguration = {
@@ -101,6 +103,8 @@ const DEFAULTS: BotConfiguration = {
   cooldownDurationMin: 5,
   paperTrading: true,
   tradingEnabled: false,
+  botRunning: false,
+  botPaused: false,
 };
 
 @Injectable()
@@ -165,6 +169,8 @@ export class BotConfigService implements OnModuleInit {
         cooldownDurationMin: num('cooldownDurationMin', DEFAULTS.cooldownDurationMin),
         paperTrading: bool('paperTrading', DEFAULTS.paperTrading),
         tradingEnabled: bool('tradingEnabled', DEFAULTS.tradingEnabled),
+        botRunning: bool('botRunning', DEFAULTS.botRunning),
+        botPaused: bool('botPaused', DEFAULTS.botPaused),
       };
     } catch (err) {
       this.logger.warn('Could not load config, using defaults: ' + err.message);

@@ -94,7 +94,10 @@ export class PositionEngineService implements OnModuleInit {
   private async openNew(symbol: string, side: 'LONG' | 'SHORT', candidate: TradeValidationResult): Promise<boolean> {
     const cfg = this.config.get();
     const price = this.scanner.getCurrentPrice(symbol);
-    if (!price) return false;
+    if (price <= 0) {
+      this.logger.warn(`Cannot open ${symbol} ${side}: price unavailable (${price})`);
+      return false;
+    }
 
     const capital = Math.min(cfg.maxCapitalPerEntry, this.balance * 0.1);
     const quantity = (capital * cfg.leverage) / price;
@@ -132,7 +135,7 @@ export class PositionEngineService implements OnModuleInit {
 
     await this.notify('POSITION_OPENED', `${side} opened`, `${symbol} @ $${price.toFixed(4)} score=${candidate.tradeScore.toFixed(1)}`);
     this.logger.log(`Opened ${side} ${symbol} @ ${price} (score ${candidate.tradeScore.toFixed(1)})`);
-    this.events.emit('position.opened', position);
+    this.events.emit('position.opened', { position, candidate });
     return true;
   }
 
@@ -141,7 +144,10 @@ export class PositionEngineService implements OnModuleInit {
     if (position.entryCount >= cfg.maxEntriesPerSymbol) return false;
 
     const price = this.scanner.getCurrentPrice(position.symbol);
-    if (!price) return false;
+    if (price <= 0) {
+      this.logger.warn(`Cannot pyramid ${position.symbol}: price unavailable (${price})`);
+      return false;
+    }
 
     const isLong = position.side === 'LONG';
     const isProfitable = isLong ? price > Number(position.avgEntryPrice) : price < Number(position.avgEntryPrice);
@@ -170,6 +176,13 @@ export class PositionEngineService implements OnModuleInit {
     });
 
     this.logger.log(`Pyramided ${position.symbol} ${position.side} @ ${price} (entry ${position.entryCount + 1})`);
+    this.events.emit('position.pyramided', {
+      symbol: position.symbol,
+      side: position.side,
+      price,
+      newAvgEntry: newAvgEntry,
+      entryCount: position.entryCount + 1,
+    });
     return true;
   }
 
@@ -263,7 +276,7 @@ export class PositionEngineService implements OnModuleInit {
     await this.updateDailyStats(pnl, exitFee, pnl > 0);
     await this.notify('POSITION_CLOSED', `${pos.side} closed`, `${pos.symbol} ${exitReason} PnL: $${netPnl.toFixed(2)}`);
     this.logger.log(`Closed ${pos.symbol} ${pos.side} @ ${exitPrice} PnL: ${netPnl.toFixed(2)} (${exitReason})`);
-    this.events.emit('position.closed', { pos, pnl: netPnl });
+    this.events.emit('position.closed', { pos, pnl: netPnl, exitReason, exitPrice, pnlPct, duration });
   }
 
   async closeAllPositions() {

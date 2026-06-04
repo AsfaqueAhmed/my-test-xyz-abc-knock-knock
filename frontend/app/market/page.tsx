@@ -3,6 +3,21 @@ import { useState, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { fetchMarketTokens, type MarketToken } from '../../lib/api';
 
+// Show the natural precision of a price without hard decimal caps.
+// Uses 8 significant figures, strips trailing zeros, and avoids scientific notation.
+function fmtPrice(price: number): string {
+  if (!price || price <= 0) return '—';
+  // Round to 8 significant figures to eliminate floating-point noise
+  const sig = parseFloat(price.toPrecision(8));
+  const str = sig.toString();
+  // JS may produce scientific notation for very tiny prices (e.g. 0.000000012)
+  if (str.includes('e-')) {
+    const exp = parseInt(str.split('e-')[1], 10);
+    return sig.toFixed(exp + 7);
+  }
+  return str;
+}
+
 type SortKey = keyof MarketToken;
 type SortDir = 'asc' | 'desc';
 
@@ -135,9 +150,11 @@ export default function MarketPage() {
     : '—';
 
   return (
-    <div>
-      {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', marginBottom: 20, gap: 12, flexWrap: 'wrap' }}>
+    /* 100vh minus the 24px top + 24px bottom padding of <main> */
+    <div style={{ height: 'calc(100vh - 48px)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+
+      {/* Header — stays fixed while list scrolls */}
+      <div style={{ flexShrink: 0, display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', marginBottom: 16, gap: 12, flexWrap: 'wrap' }}>
         <div>
           <h1 style={{ fontSize: 20, fontWeight: 700, color: 'var(--text)', marginBottom: 4 }}>Market</h1>
           <p style={{ fontSize: 12, color: 'var(--text3)' }}>
@@ -170,13 +187,16 @@ export default function MarketPage() {
         </div>
       )}
 
-      {/* Table */}
+      {/* Table — fills remaining height, scrolls independently */}
       {!isLoading && !error && (
-        <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
-          <div style={{ overflowX: 'auto' }}>
+        <div
+          className="card"
+          style={{ flex: 1, minHeight: 0, padding: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
+        >
+          <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'auto', paddingBottom: 24 }}>
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead>
-                <tr style={{ background: 'var(--bg3)' }}>
+                <tr style={{ background: 'var(--bg3)', position: 'sticky', top: 0, zIndex: 2 }}>
                   <ThSortable label="#" sortKey="symbol" current={sortKey} dir={sortDir} onSort={handleSort} align="left" />
                   <ThSortable label="Symbol / Name" sortKey="symbol" current={sortKey} dir={sortDir} onSort={handleSort} align="left" />
                   <ThSortable label="Price" sortKey="price" current={sortKey} dir={sortDir} onSort={handleSort} />
@@ -204,23 +224,10 @@ export default function MarketPage() {
                 {sorted.map((token, idx) => {
                   const baseSymbol = token.symbol.replace('USDT', '').replace('BUSD', '');
                   const displayName = token.name && token.name !== token.symbol ? token.name : baseSymbol;
-                  const price = token.price;
-                  const priceStr =
-                    price === 0
-                      ? '—'
-                      : price < 0.001
-                      ? price.toFixed(7)
-                      : price < 1
-                      ? price.toFixed(5)
-                      : price < 10
-                      ? price.toFixed(4)
-                      : price.toFixed(2);
+                  const priceStr = fmtPrice(token.price);
 
                   return (
-                    <tr
-                      key={token.symbol}
-                      style={{ borderBottom: '1px solid rgba(30,45,74,0.5)' }}
-                    >
+                    <tr key={token.symbol} style={{ borderBottom: '1px solid rgba(30,45,74,0.5)' }}>
                       {/* Row # */}
                       <td style={{ padding: '8px 10px', fontSize: 11, color: 'var(--text3)', width: 36, textAlign: 'right' }}>
                         {idx + 1}

@@ -1,5 +1,6 @@
 import { Controller, Get, Post, Put, Param, Body, Query, HttpException, HttpStatus } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PositionEngineService } from './position-engine/position-engine.service';
 import { AnalyticsService } from './analytics/analytics.service';
 import { RiskEngineService } from './risk-engine/risk-engine.service';
@@ -8,6 +9,7 @@ import { MarketScannerService } from './market-scanner/market-scanner.service';
 import { MomentumRankerService } from './momentum-ranker/momentum-ranker.service';
 import { PortfolioManagerService } from './portfolio-manager/portfolio-manager.service';
 import { PrismaService } from './prisma/prisma.service';
+import { BotLogService } from './bot-log/bot-log.service';
 
 @Controller()
 @ApiTags('Trading Platform')
@@ -21,6 +23,8 @@ export class AppController {
     private readonly ranker: MomentumRankerService,
     private readonly portfolio: PortfolioManagerService,
     private readonly prisma: PrismaService,
+    private readonly botLog: BotLogService,
+    private readonly events: EventEmitter2,
   ) {}
 
   @Get('health')
@@ -45,6 +49,10 @@ export class AppController {
     const stats = await this.analytics.getSummaryStats();
     const riskStats = await this.risk.getStats();
     const unrealizedPnl = openPositions.reduce((s, p) => s + Number(p.unrealizedPnl || 0), 0);
+    const investedBalance = openPositions.reduce((s, p) => {
+      const notional = Number(p.avgEntryPrice) * Number(p.quantity);
+      return s + notional / (Number(p.leverage) || 1);
+    }, 0);
     const equity = balance + unrealizedPnl;
 
     const today = new Date(); today.setHours(0,0,0,0);
@@ -57,6 +65,7 @@ export class AppController {
 
     return {
       balance,
+      investedBalance,
       equity,
       unrealizedPnl,
       dailyPnl: todayStats?.dailyPnl ?? riskStats.dailyPnl,
@@ -163,23 +172,21 @@ export class AppController {
 
   @Post('bot/start')
   async startBot() {
-    this.portfolio.start();
-    await this.botConfig.setTradingEnabled(true);
+    await this.portfolio.start('MANUAL');
     return { status: 'started' };
   }
 
   @Post('bot/stop')
   async stopBot() {
-    this.portfolio.stop();
-    await this.botConfig.setTradingEnabled(false);
+    await this.portfolio.stop('MANUAL');
     return { status: 'stopped' };
   }
 
   @Post('bot/pause')
-  pauseBot() { this.portfolio.pause(); return { status: 'paused' }; }
+  async pauseBot() { await this.portfolio.pause('MANUAL'); return { status: 'paused' }; }
 
   @Post('bot/resume')
-  resumeBot() { this.portfolio.resume(); return { status: 'resumed' }; }
+  async resumeBot() { await this.portfolio.resume('MANUAL'); return { status: 'resumed' }; }
 
   @Post('bot/close-all')
   async closeAll() { await this.positions.closeAllPositions(); return { success: true }; }
@@ -188,8 +195,26 @@ export class AppController {
   async emergencyStop() {
     await this.risk.triggerEmergencyStop();
     await this.positions.closeAllPositions();
-    this.portfolio.stop();
+    this.portfolio.stop('EMERGENCY_STOP', 'Emergency stop triggered by user');
+    this.events.emit('bot.emergencyStopped', { triggeredBy: 'MANUAL' });
     return { status: 'emergency_stopped' };
+  }
+
+  @Get('logs')
+  async getLogs(
+    @Query('limit')    limit?: string,
+    @Query('category') category?: string,
+    @Query('level')    level?: string,
+    @Query('symbol')   symbol?: string,
+    @Query('event')    event?: string,
+  ) {
+    return this.botLog.getLogs({
+      limit:    limit    ? parseInt(limit) : 200,
+      category: category || undefined,
+      level:    level    || undefined,
+      symbol:   symbol   || undefined,
+      event:    event    || undefined,
+    });
   }
 
   @Get('notifications')
@@ -205,6 +230,23 @@ export class AppController {
 
   @Get('market/tickers')
   getTickers() { return this.scanner.getAllTickers(); }
+
+  @Get('market/history/:symbol')
+  getSymbolHistory(@Param('symbol') symbol: string) {
+    const history = this.scanner.getPriceHistory(symbol.toUpperCase());
+    const now = Date.now();
+    return {
+      symbol: symbol.toUpperCase(),
+      snapshotCount: history.length,
+      oldestMs: history[0] ? now - history[0].timestamp : null,
+      newestMs: history[history.length - 1] ? now - history[history.length - 1].timestamp : null,
+      snapshots: history.slice(-60).map(s => ({
+        ago: `${((now - s.timestamp) / 1000).toFixed(1)}s ago`,
+        price: s.price,
+        timestamp: s.timestamp,
+      })),
+    };
+  }
 
   @Get('market/tokens')
   @Get('market/token-list')

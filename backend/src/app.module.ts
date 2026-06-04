@@ -12,6 +12,7 @@ import { PortfolioManagerModule } from './portfolio-manager/portfolio-manager.mo
 import { PositionEngineModule } from './position-engine/position-engine.module';
 import { RiskEngineModule } from './risk-engine/risk-engine.module';
 import { AnalyticsModule } from './analytics/analytics.module';
+import { BotLogModule } from './bot-log/bot-log.module';
 import { AppController } from './app.controller';
 
 @Module({
@@ -29,6 +30,7 @@ import { AppController } from './app.controller';
     PortfolioManagerModule,
     PositionEngineModule,
     AnalyticsModule,
+    BotLogModule,
   ],
   controllers: [AppController],
 })

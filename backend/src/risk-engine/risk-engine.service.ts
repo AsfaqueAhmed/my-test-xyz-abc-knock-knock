@@ -16,18 +16,25 @@ export class RiskEngineService {
   private readonly logger = new Logger(RiskEngineService.name);
   private dailyPnl = 0;
   private emergencyStop = false;
-  private lastDailyReset = new Date().toDateString();
+  private currentDayStartUtc = RiskEngineService.utcMidnight();
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly botConfig: BotConfigService,
   ) {}
 
+  // Returns the ms timestamp of today's UTC midnight — stable, locale-independent.
+  private static utcMidnight(): number {
+    const d = new Date();
+    d.setUTCHours(0, 0, 0, 0);
+    return d.getTime();
+  }
+
   async checkDailyReset() {
-    const today = new Date().toDateString();
-    if (today !== this.lastDailyReset) {
+    const todayStart = RiskEngineService.utcMidnight();
+    if (todayStart !== this.currentDayStartUtc) {
       this.dailyPnl = 0;
-      this.lastDailyReset = today;
+      this.currentDayStartUtc = todayStart;
     }
   }
 

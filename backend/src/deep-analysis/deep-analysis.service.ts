@@ -37,7 +37,15 @@ export class DeepAnalysisService {
   // Cache candles per symbol+interval to avoid hammering Binance REST
   private candleCache: Map<string, { data: CandleData[]; fetchedAt: number }> = new Map();
   private openInterestCache: Map<string, { openInterest: number; notional: number; fetchedAt: number }> = new Map();
-  private readonly CACHE_TTL = 55_000; // refresh every 55s (candles are 1m)
+
+  // Per-interval TTLs: 1m candles need more frequent refreshes to avoid analysing
+  // a half-stale candle; longer intervals can tolerate a wider cache window.
+  private readonly CACHE_TTL: Record<string, number> = {
+    '1m':  20_000,   // refresh ~3× per minute
+    '5m':  60_000,   // refresh once per minute
+    '15m': 120_000,  // refresh every 2 minutes
+  };
+  private readonly CACHE_TTL_DEFAULT = 55_000;
 
   constructor(
     private readonly config: BotConfigService,
@@ -285,7 +293,7 @@ export class DeepAnalysisService {
 
   private async fetchOpenInterest(symbol: string, price: number): Promise<{ openInterest: number; notional: number }> {
     const cached = this.openInterestCache.get(symbol);
-    if (cached && Date.now() - cached.fetchedAt < this.CACHE_TTL) {
+    if (cached && Date.now() - cached.fetchedAt < this.CACHE_TTL_DEFAULT) {
       return { openInterest: cached.openInterest, notional: cached.notional };
     }
 
@@ -315,7 +323,8 @@ export class DeepAnalysisService {
   async fetchCandles(symbol: string, interval: string, limit: number): Promise<CandleData[]> {
     const key = `${symbol}:${interval}`;
     const cached = this.candleCache.get(key);
-    if (cached && Date.now() - cached.fetchedAt < this.CACHE_TTL) {
+    const ttl = this.CACHE_TTL[interval] ?? this.CACHE_TTL_DEFAULT;
+    if (cached && Date.now() - cached.fetchedAt < ttl) {
       return cached.data;
     }
 

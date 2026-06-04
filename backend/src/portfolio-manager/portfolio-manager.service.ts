@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PrismaService } from '../prisma/prisma.service';
@@ -24,7 +24,7 @@ export interface PositionStrengthScore {
 }
 
 @Injectable()
-export class PortfolioManagerService {
+export class PortfolioManagerService implements OnModuleInit {
   private readonly logger = new Logger(PortfolioManagerService.name);
 
   // Latest position strength scores
@@ -47,12 +47,43 @@ export class PortfolioManagerService {
     private readonly events: EventEmitter2,
   ) {}
 
+  // ─── Lifecycle ────────────────────────────────────────────────────────────
+
+  async onModuleInit() {
+    const cfg = this.config.get();
+    if (cfg.botRunning) {
+      this.botRunning = true;
+      this.botPaused = cfg.botPaused;
+      this.logger.log(`Bot state restored from DB: running=${this.botRunning} paused=${this.botPaused}`);
+    }
+  }
+
   // ─── Bot Control ──────────────────────────────────────────────────────────
 
-  start() { this.botRunning = true; this.botPaused = false; this.logger.log('Portfolio manager started'); }
-  stop()  { this.botRunning = false; this.botPaused = false; this.logger.log('Portfolio manager stopped'); }
-  pause() { this.botPaused = true;  this.logger.log('Portfolio manager paused'); }
-  resume(){ this.botPaused = false; this.logger.log('Portfolio manager resumed'); }
+  async start(triggeredBy = 'MANUAL') {
+    this.botRunning = true; this.botPaused = false;
+    await this.config.update({ botRunning: true, botPaused: false, tradingEnabled: true });
+    this.logger.log('Portfolio manager started');
+    this.events.emit('bot.started', { triggeredBy });
+  }
+  async stop(triggeredBy = 'MANUAL', reason?: string) {
+    this.botRunning = false; this.botPaused = false;
+    await this.config.update({ botRunning: false, botPaused: false, tradingEnabled: false });
+    this.logger.log('Portfolio manager stopped');
+    this.events.emit('bot.stopped', { triggeredBy, reason });
+  }
+  async pause(triggeredBy = 'MANUAL') {
+    this.botPaused = true;
+    await this.config.update({ botPaused: true });
+    this.logger.log('Portfolio manager paused');
+    this.events.emit('bot.paused', { triggeredBy });
+  }
+  async resume(triggeredBy = 'MANUAL') {
+    this.botPaused = false;
+    await this.config.update({ botPaused: false });
+    this.logger.log('Portfolio manager resumed');
+    this.events.emit('bot.resumed', { triggeredBy });
+  }
   getStatus() { return { running: this.botRunning, paused: this.botPaused }; }
 
   // ─── Main Pipeline ────────────────────────────────────────────────────────
@@ -130,14 +161,16 @@ export class PortfolioManagerService {
     const inTrailing = pos.status === 'LONG_TRAILING' || pos.status === 'SHORT_TRAILING';
     const lastValidation = this.lastValidationByPositionSide.get(`${pos.symbol}:${pos.side}`);
 
-    // Momentum component (0-30)
+    // Momentum component (0-30).
+    // Uses the same 1% = full-scale convention as TradeValidatorService:
+    // absScore * 30 gives 30 pts at 1% move; clamped to the 30-pt maximum.
     let momentumScore = 0;
     if (momentum) {
       const absScore = Math.abs(momentum.score);
       const directionMatch = isLong
         ? momentum.direction === 'BULLISH'
         : momentum.direction === 'BEARISH';
-      momentumScore = directionMatch ? Math.min(absScore / 2 * 30, 30) : 0;
+      momentumScore = directionMatch ? Math.min(absScore * 30, 30) : 0;
     }
 
     // Profit component (0-25) — reward profitable positions
@@ -234,6 +267,13 @@ export class PortfolioManagerService {
           `with ${candidate.symbol} (score ${candidateScore.toFixed(1)}, ` +
           `opportunity +${opportunityScore.toFixed(1)})`
         );
+        this.events.emit('position.replaced', {
+          closedSymbol: weakest.symbol,
+          closedScore: weakest.score,
+          newSymbol: candidate.symbol,
+          newScore: candidateScore,
+          opportunityScore,
+        });
         this.events.emit('portfolio.replacePosition', {
           closePositionId: weakest.positionId,
           openCandidate: candidate,

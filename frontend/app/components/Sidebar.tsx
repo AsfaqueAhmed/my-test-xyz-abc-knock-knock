@@ -14,6 +14,7 @@ const navItems = [
   { href: '/risk', label: 'Risk', icon: '⚠' },
   { href: '/config', label: 'Config', icon: '⚙' },
   { href: '/bot-control', label: 'Bot Control', icon: '▶' },
+  { href: '/logs', label: 'Logs', icon: '≡' },
   { href: '/system-health', label: 'System', icon: '◎' },
 ];
 
@@ -34,13 +35,14 @@ export function Sidebar() {
   return (
     <aside style={{
       width: 220,
-      minHeight: '100vh',
+      height: '100vh',
       background: 'var(--bg2)',
       borderRight: '1px solid var(--border)',
       display: 'flex',
       flexDirection: 'column',
       padding: '0',
       flexShrink: 0,
+      overflowY: 'auto',
     }}>
       {/* Logo */}
       <div style={{ padding: '20px 20px 16px', borderBottom: '1px solid var(--border)' }}>
