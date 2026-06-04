@@ -1,4 +1,4 @@
-import { Injectable, OnModuleInit, Logger } from '@nestjs/common';
+import { Injectable, OnModuleInit, Logger, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 
 export interface BotConfiguration {
@@ -16,9 +16,7 @@ export interface BotConfiguration {
 
   // Pipeline
   topCandidatesCount: number;        // how many from each side go to deep analysis (default 10)
-  scanIntervalMs: number;            // snapshot frequency ms (default 5000)
-  symbolRefreshIntervalMs: number;   // how often to refresh Binance futures token list
-  tickerSnapshotIntervalMs: number;   // REST fallback refresh for ticker prices/24h changes
+  scanIntervalMs: number;            // fetch prices + snapshot frequency ms (default 5000)
   priceHistoryHours: number;         // rolling price cache hours (default 2)
   tradeScoreThreshold: number;       // min score to trade (default 80)
   replacementThreshold: number;      // min opportunity score to replace (default 15)
@@ -72,8 +70,6 @@ const DEFAULTS: BotConfiguration = {
   hardStopPct: 5,
   topCandidatesCount: 10,
   scanIntervalMs: 5000,
-  symbolRefreshIntervalMs: 10 * 60 * 1000,
-  tickerSnapshotIntervalMs: 60 * 1000,
   priceHistoryHours: 2,
   tradeScoreThreshold: 80,
   replacementThreshold: 15,
@@ -138,8 +134,6 @@ export class BotConfigService implements OnModuleInit {
         hardStopPct: num('hardStopPct', DEFAULTS.hardStopPct),
         topCandidatesCount: num('topCandidatesCount', DEFAULTS.topCandidatesCount),
         scanIntervalMs: num('scanIntervalMs', DEFAULTS.scanIntervalMs),
-        symbolRefreshIntervalMs: num('symbolRefreshIntervalMs', DEFAULTS.symbolRefreshIntervalMs),
-        tickerSnapshotIntervalMs: num('tickerSnapshotIntervalMs', DEFAULTS.tickerSnapshotIntervalMs),
         priceHistoryHours: num('priceHistoryHours', DEFAULTS.priceHistoryHours),
         tradeScoreThreshold: num('tradeScoreThreshold', DEFAULTS.tradeScoreThreshold),
         replacementThreshold: num('replacementThreshold', DEFAULTS.replacementThreshold),
@@ -180,7 +174,13 @@ export class BotConfigService implements OnModuleInit {
   get(): BotConfiguration { return { ...this.config }; }
 
   async update(partial: Partial<BotConfiguration>): Promise<BotConfiguration> {
-    this.config = { ...this.config, ...partial };
+    const merged = { ...this.config, ...partial };
+    if (merged.trailingPct < merged.activationPct) {
+      throw new BadRequestException(
+        `Trailing % (${merged.trailingPct}) must be ≥ Activation % (${merged.activationPct})`,
+      );
+    }
+    this.config = merged;
     for (const [key, value] of Object.entries(partial)) {
       const strValue = typeof value === 'object' ? JSON.stringify(value) : String(value);
       await this.prisma.botConfig.upsert({

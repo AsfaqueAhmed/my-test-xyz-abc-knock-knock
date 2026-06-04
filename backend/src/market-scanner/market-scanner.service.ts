@@ -1,7 +1,6 @@
 import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { BotConfigService } from '../config/bot-config.service';
-import WebSocket = require('ws');
 
 export interface PriceSnapshot {
   timestamp: number;
@@ -22,27 +21,15 @@ export interface SymbolTicker {
 export class MarketScannerService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(MarketScannerService.name);
 
-  // symbol -> array of price snapshots (rolling 2h)
   private priceHistory: Map<string, PriceSnapshot[]> = new Map();
-
-  // symbol -> latest ticker data
   private tickers: Map<string, SymbolTicker> = new Map();
-
-  // all known USDT perp symbols (fetched from Binance on startup)
   private allSymbols: string[] = [];
-  private allSymbolsSet: Set<string> = new Set();
   private tokenNames: Map<string, string> = new Map();
 
-  private ws: WebSocket | null = null;
-  private reconnectTimer: NodeJS.Timeout | null = null;
-  private symbolRefreshTimer: NodeJS.Timeout | null = null;
-  private tickerSnapshotTimer: NodeJS.Timeout | null = null;
-  private snapshotTimer: NodeJS.Timeout | null = null;
+  private scanTimer: NodeJS.Timeout | null = null;
   private cleanupTimer: NodeJS.Timeout | null = null;
-  private isDestroyed = false;
-  private wsConnected = false;
   private lastUpdate: Date = new Date();
-  private scanTurn = 0; // incremented every snapshot interval
+  private scanTurn = 0;
 
   constructor(
     private readonly config: BotConfigService,
@@ -51,22 +38,14 @@ export class MarketScannerService implements OnModuleInit, OnModuleDestroy {
 
   async onModuleInit() {
     await this.fetchAllSymbols();
-    await this.fetchTickerSnapshot();
-    this.connectWebSocket();
-    this.startSymbolRefreshTimer();
-    this.startTickerSnapshotTimer();
-    this.startSnapshotTimer();
+    await this.fetchAndSnapshot();
+    this.startScanTimer();
     this.startCleanupTimer();
   }
 
   onModuleDestroy() {
-    this.isDestroyed = true;
-    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-    if (this.symbolRefreshTimer) clearInterval(this.symbolRefreshTimer);
-    if (this.tickerSnapshotTimer) clearInterval(this.tickerSnapshotTimer);
-    if (this.snapshotTimer) clearInterval(this.snapshotTimer);
+    if (this.scanTimer) clearInterval(this.scanTimer);
     if (this.cleanupTimer) clearInterval(this.cleanupTimer);
-    if (this.ws) try { this.ws.terminate(); } catch (_) {}
   }
 
   // ─── Symbol Discovery ─────────────────────────────────────────────────────
@@ -112,7 +91,6 @@ export class MarketScannerService implements OnModuleInit, OnModuleDestroy {
     const next = new Set(symbols.map(s => s.symbol));
 
     this.allSymbols = symbols.map(s => s.symbol).sort();
-    this.allSymbolsSet = new Set(this.allSymbols);
 
     for (const { symbol, baseAsset } of symbols) {
       this.tokenNames.set(symbol, baseAsset);
@@ -132,11 +110,24 @@ export class MarketScannerService implements OnModuleInit, OnModuleDestroy {
     this.logger.log(`Active USDT perpetuals: ${this.allSymbols.length}`);
   }
 
-  private startSymbolRefreshTimer() {
+  // ─── Scan Timer (fetch + snapshot) ───────────────────────────────────────
+
+  private startScanTimer() {
     const cfg = this.config.get();
-    this.symbolRefreshTimer = setInterval(() => {
-      void this.fetchAllSymbols();
-    }, cfg.symbolRefreshIntervalMs);
+    this.scanTimer = setInterval(() => {
+      void this.fetchAndSnapshot();
+    }, cfg.scanIntervalMs);
+  }
+
+  restartTimers() {
+    if (this.scanTimer) clearInterval(this.scanTimer);
+    this.startScanTimer();
+    this.logger.log('Scanner timer restarted with updated config');
+  }
+
+  private async fetchAndSnapshot() {
+    await this.fetchTickerSnapshot();
+    this.takeSnapshot();
   }
 
   private async fetchTickerSnapshot() {
@@ -167,107 +158,9 @@ export class MarketScannerService implements OnModuleInit, OnModuleDestroy {
         });
       }
       this.lastUpdate = new Date();
-      this.logger.log(`Ticker snapshot refreshed: ${this.tickers.size} symbols`);
     } catch (err) {
       this.logger.warn(`Could not refresh ticker snapshot: ${err.message}`);
     }
-  }
-
-  private startTickerSnapshotTimer() {
-    const cfg = this.config.get();
-    this.tickerSnapshotTimer = setInterval(() => {
-      void this.fetchTickerSnapshot();
-    }, cfg.tickerSnapshotIntervalMs);
-  }
-
-  // ─── WebSocket ────────────────────────────────────────────────────────────
-
-  private connectWebSocket() {
-    if (this.isDestroyed) return;
-
-    // Single stream — receives ALL symbol tickers every ~1s
-    const url = 'wss://fstream.binance.com/ws/!miniTicker@arr';
-    this.logger.log('Connecting to Binance !miniTicker@arr stream...');
-
-    try {
-      this.ws = new WebSocket(url);
-
-      this.ws.on('open', () => {
-        this.wsConnected = true;
-        this.lastUpdate = new Date();
-        this.logger.log('Market scanner WebSocket connected');
-      });
-
-      this.ws.on('message', (data: Buffer) => {
-        try {
-          const tickers = JSON.parse(data.toString());
-          this.processTickers(tickers);
-          this.lastUpdate = new Date();
-        } catch (_) {}
-      });
-
-      this.ws.on('close', () => {
-        this.wsConnected = false;
-        this.logger.warn('Scanner WS disconnected, reconnecting in 3s...');
-        if (!this.isDestroyed) {
-          this.reconnectTimer = setTimeout(() => this.connectWebSocket(), 3000);
-        }
-      });
-
-      this.ws.on('error', (err: Error) => {
-        this.logger.warn(`Scanner WS error: ${err.message}`);
-        this.wsConnected = false;
-      });
-
-      // Ping to keep alive
-      setInterval(() => {
-        if (this.ws?.readyState === WebSocket.OPEN) this.ws.ping();
-      }, 20000);
-
-    } catch (err) {
-      this.logger.warn(`Scanner WS failed: ${err.message}`);
-      if (!this.isDestroyed) {
-        this.reconnectTimer = setTimeout(() => this.connectWebSocket(), 5000);
-      }
-    }
-  }
-
-  private processTickers(tickers: any[]) {
-    for (const t of tickers) {
-      // miniTicker format includes s=symbol, c=close, o=24h open, v=volume, q=quoteVolume
-      if (!t.s || !t.s.endsWith('USDT')) continue;
-      const price = parseFloat(t.c);
-      if (!price || isNaN(price)) continue;
-      const open24h = parseFloat(t.o);
-      const change24h = open24h > 0 ? ((price - open24h) / open24h) * 100 : 0;
-
-      this.tickers.set(t.s, {
-        name: this.getTokenName(t.s),
-        symbol: t.s,
-        price,
-        change24h,
-        volume24h: parseFloat(t.q) || 0,
-        updatedAt: Date.now(),
-      });
-
-      // Add to allSymbols if newly seen (O(1) Set lookup instead of O(n) includes)
-      if (!this.allSymbolsSet.has(t.s)) {
-        this.allSymbols.push(t.s);
-        this.allSymbolsSet.add(t.s);
-        this.tokenNames.set(t.s, this.deriveTokenName(t.s));
-        this.priceHistory.set(t.s, []);
-        this.logger.log(`New symbol discovered: ${t.s}`);
-      }
-    }
-  }
-
-  // ─── Snapshot Timer ───────────────────────────────────────────────────────
-
-  private startSnapshotTimer() {
-    const cfg = this.config.get();
-    this.snapshotTimer = setInterval(() => {
-      this.takeSnapshot();
-    }, cfg.scanIntervalMs);
   }
 
   private takeSnapshot() {
@@ -280,14 +173,12 @@ export class MarketScannerService implements OnModuleInit, OnModuleDestroy {
       this.priceHistory.set(symbol, history);
     }
 
-    // Emit scan tick so momentum ranker can process
     this.events.emit('scanner.tick', { turn: this.scanTurn, timestamp: now });
   }
 
   // ─── Cleanup Timer ────────────────────────────────────────────────────────
 
   private startCleanupTimer() {
-    // Prune old price history every minute
     this.cleanupTimer = setInterval(() => {
       const cfg = this.config.get();
       const cutoff = Date.now() - cfg.priceHistoryHours * 60 * 60 * 1000;
@@ -298,12 +189,11 @@ export class MarketScannerService implements OnModuleInit, OnModuleDestroy {
     }, 60_000);
   }
 
-  // ─── Public API ──────────────────────────────────────────────────────────
+  // ─── Public API ───────────────────────────────────────────────────────────
 
   getPriceAt(symbol: string, targetMs: number): number | null {
     const history = this.priceHistory.get(symbol);
     if (!history || history.length === 0) return null;
-    // Return the most recent snapshot at or before targetMs.
     let best: PriceSnapshot | null = null;
     for (const snap of history) {
       if (snap.timestamp > targetMs) break;
@@ -343,7 +233,7 @@ export class MarketScannerService implements OnModuleInit, OnModuleDestroy {
     return this.priceHistory.get(symbol) ?? [];
   }
 
-  isConnected(): boolean { return this.wsConnected; }
+  isConnected(): boolean { return this.tickers.size > 0; }
   getLastUpdate(): Date { return this.lastUpdate; }
   getScanTurn(): number { return this.scanTurn; }
   getSymbolCount(): number { return this.allSymbols.length; }

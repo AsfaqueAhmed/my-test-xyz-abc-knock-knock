@@ -54,12 +54,12 @@ export default function SignalsPage() {
       {/* Live scan grid */}
       {liveMode && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 12, marginBottom: 24 }}>
-          {sigArr.map((s: any) => {
+          {sigArr.map((s: any, i: number) => {
             const isLong = s.direction === 'LONG';
             const isShort = s.direction === 'SHORT';
             const borderColor = isLong ? 'rgba(0,214,143,0.3)' : isShort ? 'rgba(255,71,87,0.3)' : 'var(--border)';
             return (
-              <div key={s.symbol} className="card" style={{ border: `1px solid ${borderColor}` }}>
+              <div key={`${s.symbol}-${i}`} className="card" style={{ border: `1px solid ${borderColor}` }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
                   <span style={{ fontWeight: 700, fontSize: 15 }}>{s.symbol}</span>
                   <DirectionBadge dir={s.direction} />

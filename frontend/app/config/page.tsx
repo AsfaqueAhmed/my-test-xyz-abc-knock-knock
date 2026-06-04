@@ -39,9 +39,13 @@ export default function ConfigPage() {
   const { data: config } = useQuery({ queryKey: ['config'], queryFn: fetchConfig });
   const [form, setForm] = useState<any>({});
   const [saved, setSaved] = useState(false);
+  const [trailingError, setTrailingError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (config) setForm(config);
+    if (config) setForm({
+      ...config,
+      scanIntervalSec: Math.round((config.scanIntervalMs ?? 5000) / 1000),
+    });
   }, [config]);
 
   const mutation = useMutation({
@@ -55,15 +59,25 @@ export default function ConfigPage() {
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value, type } = e.target;
+    if (name === 'trailingPct' || name === 'activationPct') setTrailingError(null);
     setForm((prev: any) => ({
       ...prev,
-      [name]: type === 'number' ? parseFloat(value) : type === 'checkbox' ? (e.target as HTMLInputElement).checked : value,
+      [name]: type === 'number' ? (value === '' ? '' : parseFloat(value)) : type === 'checkbox' ? (e.target as HTMLInputElement).checked : value,
     }));
   };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    mutation.mutate(form);
+    if ((form.trailingPct ?? 0) < (form.activationPct ?? 0)) {
+      setTrailingError(`Trailing % (${form.trailingPct}) must be ≥ Activation % (${form.activationPct})`);
+      return;
+    }
+    setTrailingError(null);
+    const { scanIntervalSec, ...rest } = form;
+    mutation.mutate({
+      ...rest,
+      scanIntervalMs: (scanIntervalSec ?? 5) * 1000,
+    });
   };
 
   if (!config) return <div style={{ color: 'var(--text2)', padding: 20 }}>Loading config...</div>;
@@ -85,7 +99,7 @@ export default function ConfigPage() {
 
       <form onSubmit={handleSubmit}>
         <Section title="Position Sizing">
-          <Field label="Max Active Symbols" name="maxActiveSymbols" value={form.maxActiveSymbols ?? ''} onChange={handleChange} min={1} max={20} step={1} hint="Max simultaneous open positions" />
+          <Field label="Max Active Positions" name="maxActivePositions" value={form.maxActivePositions ?? ''} onChange={handleChange} min={1} max={20} step={1} hint="Max simultaneous open positions" />
           <Field label="Max Entries Per Symbol" name="maxEntriesPerSymbol" value={form.maxEntriesPerSymbol ?? ''} onChange={handleChange} min={1} max={10} step={1} hint="Max pyramid entries per symbol" />
           <Field label="Capital Per Entry ($)" name="maxCapitalPerEntry" value={form.maxCapitalPerEntry ?? ''} onChange={handleChange} min={10} step={10} hint="USDT allocated per entry" />
           <Field label="Initial Balance ($)" name="initialBalance" value={form.initialBalance ?? ''} onChange={handleChange} min={100} step={100} hint="Starting paper balance" />
@@ -94,12 +108,18 @@ export default function ConfigPage() {
 
         <Section title="Trailing Stop Algorithm">
           <Field label="Activation %" name="activationPct" value={form.activationPct ?? ''} onChange={handleChange} min={0.1} max={20} step={0.1} hint="Profit % to activate trailing" />
-          <Field label="Trailing %" name="trailingPct" value={form.trailingPct ?? ''} onChange={handleChange} min={0.1} max={20} step={0.1} hint="Trail distance from peak/trough" />
+          <Field label="Trailing %" name="trailingPct" value={form.trailingPct ?? ''} onChange={handleChange} min={0.1} max={20} step={0.1} hint="Trail distance from peak/trough — must be ≥ Activation %" />
           <Field label="Hard Stop %" name="hardStopPct" value={form.hardStopPct ?? ''} onChange={handleChange} min={0.1} max={50} step={0.1} hint="Absolute maximum loss per trade" />
         </Section>
+        {trailingError && (
+          <div style={{ marginTop: -10, marginBottom: 16, padding: '10px 14px', background: 'rgba(255,71,87,0.1)', border: '1px solid rgba(255,71,87,0.3)', borderRadius: 6, fontSize: 12, color: 'var(--red)' }}>
+            ⚠ {trailingError}
+          </div>
+        )}
 
         <Section title="Signal Thresholds">
-          <Field label="Momentum Threshold" name="momentumThreshold" value={form.momentumThreshold ?? ''} onChange={handleChange} min={0.01} max={5} step={0.01} hint="Min momentum score to generate signal" />
+          <Field label="Trade Score Threshold" name="tradeScoreThreshold" value={form.tradeScoreThreshold ?? ''} onChange={handleChange} min={0} max={100} step={1} hint="Min score (0–100) required to enter a trade" />
+          <Field label="Replacement Threshold" name="replacementThreshold" value={form.replacementThreshold ?? ''} onChange={handleChange} min={0} max={100} step={1} hint="Min opportunity score to replace an existing position" />
         </Section>
 
         <Section title="Risk Management">
@@ -113,37 +133,11 @@ export default function ConfigPage() {
           <Field label="Cooldown Duration (min)" name="cooldownDurationMin" value={form.cooldownDurationMin ?? ''} onChange={handleChange} min={1} max={120} step={1} hint="How long trading is paused per symbol" />
         </Section>
 
-        {/* Symbols */}
-        <div className="card" style={{ marginBottom: 16 }}>
-          <div style={{ fontSize: 12, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 14, paddingBottom: 10, borderBottom: '1px solid var(--border)' }}>
-            Monitored Symbols
-          </div>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-            {['BTCUSDT','ETHUSDT','BNBUSDT','SOLUSDT','XRPUSDT','DOGEUSDT','ADAUSDT','AVAXUSDT','LINKUSDT','MATICUSDT'].map(sym => {
-              const active = (form.symbols || []).includes(sym);
-              return (
-                <button
-                  key={sym}
-                  type="button"
-                  className={active ? 'btn btn-primary' : 'btn btn-ghost'}
-                  style={{ fontSize: 12, padding: '5px 12px' }}
-                  onClick={() => {
-                    const current: string[] = form.symbols || [];
-                    setForm((prev: any) => ({
-                      ...prev,
-                      symbols: active ? current.filter(s => s !== sym) : [...current, sym],
-                    }));
-                  }}
-                >
-                  {sym.replace('USDT', '')}
-                </button>
-              );
-            })}
-          </div>
-          <div style={{ marginTop: 10, fontSize: 11, color: 'var(--text3)' }}>
-            {(form.symbols || []).length} symbols selected
-          </div>
-        </div>
+        <Section title="Scanner Pipeline">
+          <Field label="Scan Interval (sec)" name="scanIntervalSec" value={form.scanIntervalSec ?? ''} onChange={handleChange} min={1} max={60} step={1} hint="How often to fetch prices from Binance and snapshot history" />
+          <Field label="Price History (hrs)" name="priceHistoryHours" value={form.priceHistoryHours ?? ''} onChange={handleChange} min={1} max={24} step={1} hint="Rolling price history window kept in memory" />
+          <Field label="Top Candidates" name="topCandidatesCount" value={form.topCandidatesCount ?? ''} onChange={handleChange} min={1} max={50} step={1} hint="Candidates passed to deep analysis per scan" />
+        </Section>
 
         {/* Paper trading toggle */}
         <div className="card">

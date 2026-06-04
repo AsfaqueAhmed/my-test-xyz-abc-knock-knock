@@ -168,7 +168,11 @@ export class AppController {
   getConfig() { return this.botConfig.get(); }
 
   @Put('config')
-  async updateConfig(@Body() body: any) { return this.botConfig.update(body); }
+  async updateConfig(@Body() body: any) {
+    const result = await this.botConfig.update(body);
+    this.scanner.restartTimers();
+    return result;
+  }
 
   @Post('bot/start')
   async startBot() {
@@ -233,19 +237,8 @@ export class AppController {
 
   @Get('market/history/:symbol')
   getSymbolHistory(@Param('symbol') symbol: string) {
-    const history = this.scanner.getPriceHistory(symbol.toUpperCase());
-    const now = Date.now();
-    return {
-      symbol: symbol.toUpperCase(),
-      snapshotCount: history.length,
-      oldestMs: history[0] ? now - history[0].timestamp : null,
-      newestMs: history[history.length - 1] ? now - history[history.length - 1].timestamp : null,
-      snapshots: history.slice(-60).map(s => ({
-        ago: `${((now - s.timestamp) / 1000).toFixed(1)}s ago`,
-        price: s.price,
-        timestamp: s.timestamp,
-      })),
-    };
+    const sym = symbol.toUpperCase();
+    return this.scanner.getPriceHistory(sym);
   }
 
   @Get('market/tokens')
