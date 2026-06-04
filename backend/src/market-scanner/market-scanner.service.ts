@@ -35,6 +35,7 @@ export class MarketScannerService implements OnModuleInit, OnModuleDestroy {
   private ws: WebSocket | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private symbolRefreshTimer: NodeJS.Timeout | null = null;
+  private tickerSnapshotTimer: NodeJS.Timeout | null = null;
   private snapshotTimer: NodeJS.Timeout | null = null;
   private cleanupTimer: NodeJS.Timeout | null = null;
   private isDestroyed = false;
@@ -49,8 +50,10 @@ export class MarketScannerService implements OnModuleInit, OnModuleDestroy {
 
   async onModuleInit() {
     await this.fetchAllSymbols();
+    await this.fetchTickerSnapshot();
     this.connectWebSocket();
     this.startSymbolRefreshTimer();
+    this.startTickerSnapshotTimer();
     this.startSnapshotTimer();
     this.startCleanupTimer();
   }
@@ -59,6 +62,7 @@ export class MarketScannerService implements OnModuleInit, OnModuleDestroy {
     this.isDestroyed = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     if (this.symbolRefreshTimer) clearInterval(this.symbolRefreshTimer);
+    if (this.tickerSnapshotTimer) clearInterval(this.tickerSnapshotTimer);
     if (this.snapshotTimer) clearInterval(this.snapshotTimer);
     if (this.cleanupTimer) clearInterval(this.cleanupTimer);
     if (this.ws) try { this.ws.terminate(); } catch (_) {}
@@ -131,6 +135,47 @@ export class MarketScannerService implements OnModuleInit, OnModuleDestroy {
     this.symbolRefreshTimer = setInterval(() => {
       void this.fetchAllSymbols();
     }, cfg.symbolRefreshIntervalMs);
+  }
+
+  private async fetchTickerSnapshot() {
+    try {
+      const https = require('https');
+      const data = await new Promise<string>((resolve, reject) => {
+        https.get('https://fapi.binance.com/fapi/v1/ticker/24hr', (res: any) => {
+          let d = '';
+          res.on('data', (c: any) => d += c);
+          res.on('end', () => resolve(d));
+        }).on('error', reject);
+      });
+      const json = JSON.parse(data);
+      if (!Array.isArray(json)) return;
+
+      const known = new Set(this.allSymbols);
+      for (const t of json) {
+        if (!t.symbol || !known.has(t.symbol)) continue;
+        const price = parseFloat(t.lastPrice);
+        if (!price || isNaN(price)) continue;
+        this.tickers.set(t.symbol, {
+          name: this.getTokenName(t.symbol),
+          symbol: t.symbol,
+          price,
+          change24h: parseFloat(t.priceChangePercent) || 0,
+          volume24h: parseFloat(t.quoteVolume) || 0,
+          updatedAt: Date.now(),
+        });
+      }
+      this.lastUpdate = new Date();
+      this.logger.log(`Ticker snapshot refreshed: ${this.tickers.size} symbols`);
+    } catch (err) {
+      this.logger.warn(`Could not refresh ticker snapshot: ${err.message}`);
+    }
+  }
+
+  private startTickerSnapshotTimer() {
+    const cfg = this.config.get();
+    this.tickerSnapshotTimer = setInterval(() => {
+      void this.fetchTickerSnapshot();
+    }, cfg.tickerSnapshotIntervalMs);
   }
 
   // ─── WebSocket ────────────────────────────────────────────────────────────

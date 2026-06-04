@@ -18,6 +18,7 @@ export interface BotConfiguration {
   topCandidatesCount: number;        // how many from each side go to deep analysis (default 10)
   scanIntervalMs: number;            // snapshot frequency ms (default 5000)
   symbolRefreshIntervalMs: number;   // how often to refresh Binance futures token list
+  tickerSnapshotIntervalMs: number;   // REST fallback refresh for ticker prices/24h changes
   priceHistoryHours: number;         // rolling price cache hours (default 2)
   tradeScoreThreshold: number;       // min score to trade (default 80)
   replacementThreshold: number;      // min opportunity score to replace (default 15)
@@ -70,6 +71,7 @@ const DEFAULTS: BotConfiguration = {
   topCandidatesCount: 10,
   scanIntervalMs: 5000,
   symbolRefreshIntervalMs: 10 * 60 * 1000,
+  tickerSnapshotIntervalMs: 60 * 1000,
   priceHistoryHours: 2,
   tradeScoreThreshold: 80,
   replacementThreshold: 15,
@@ -133,6 +135,7 @@ export class BotConfigService implements OnModuleInit {
         topCandidatesCount: num('topCandidatesCount', DEFAULTS.topCandidatesCount),
         scanIntervalMs: num('scanIntervalMs', DEFAULTS.scanIntervalMs),
         symbolRefreshIntervalMs: num('symbolRefreshIntervalMs', DEFAULTS.symbolRefreshIntervalMs),
+        tickerSnapshotIntervalMs: num('tickerSnapshotIntervalMs', DEFAULTS.tickerSnapshotIntervalMs),
         priceHistoryHours: num('priceHistoryHours', DEFAULTS.priceHistoryHours),
         tradeScoreThreshold: num('tradeScoreThreshold', DEFAULTS.tradeScoreThreshold),
         replacementThreshold: num('replacementThreshold', DEFAULTS.replacementThreshold),
