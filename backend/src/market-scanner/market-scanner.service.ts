@@ -9,6 +9,7 @@ export interface PriceSnapshot {
 }
 
 export interface SymbolTicker {
+  name: string;
   symbol: string;
   price: number;
   change24h: number;
@@ -29,9 +30,11 @@ export class MarketScannerService implements OnModuleInit, OnModuleDestroy {
 
   // all known USDT perp symbols (fetched from Binance on startup)
   private allSymbols: string[] = [];
+  private tokenNames: Map<string, string> = new Map();
 
   private ws: WebSocket | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
+  private symbolRefreshTimer: NodeJS.Timeout | null = null;
   private snapshotTimer: NodeJS.Timeout | null = null;
   private cleanupTimer: NodeJS.Timeout | null = null;
   private isDestroyed = false;
@@ -47,6 +50,7 @@ export class MarketScannerService implements OnModuleInit, OnModuleDestroy {
   async onModuleInit() {
     await this.fetchAllSymbols();
     this.connectWebSocket();
+    this.startSymbolRefreshTimer();
     this.startSnapshotTimer();
     this.startCleanupTimer();
   }
@@ -54,6 +58,7 @@ export class MarketScannerService implements OnModuleInit, OnModuleDestroy {
   onModuleDestroy() {
     this.isDestroyed = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    if (this.symbolRefreshTimer) clearInterval(this.symbolRefreshTimer);
     if (this.snapshotTimer) clearInterval(this.snapshotTimer);
     if (this.cleanupTimer) clearInterval(this.cleanupTimer);
     if (this.ws) try { this.ws.terminate(); } catch (_) {}
@@ -72,29 +77,60 @@ export class MarketScannerService implements OnModuleInit, OnModuleDestroy {
         }).on('error', reject);
       });
       const json = JSON.parse(data);
-      this.allSymbols = json.symbols
+      const symbols = json.symbols
         .filter((s: any) =>
           s.quoteAsset === 'USDT' &&
           s.status === 'TRADING' &&
           s.contractType === 'PERPETUAL'
-        )
-        .map((s: any) => s.symbol)
-        .sort();
-      this.logger.log(`Discovered ${this.allSymbols.length} active USDT perpetuals`);
+        );
+      this.applySymbolList(symbols.map((s: any) => ({
+        symbol: s.symbol,
+        baseAsset: s.baseAsset || this.deriveTokenName(s.symbol),
+      })));
     } catch (err) {
+      if (this.allSymbols.length > 0) {
+        this.logger.warn(`Could not refresh symbols from Binance: ${err.message}. Keeping existing list.`);
+        return;
+      }
       this.logger.warn(`Could not fetch symbols from Binance: ${err.message}. Using fallback.`);
-      this.allSymbols = [
+      this.applySymbolList([
         'BTCUSDT','ETHUSDT','BNBUSDT','SOLUSDT','XRPUSDT','DOGEUSDT','ADAUSDT','AVAXUSDT',
         'LINKUSDT','DOTUSDT','LTCUSDT','ARBUSDT','OPUSDT','INJUSDT','SUIUSDT','PEPEUSDT',
         'WLDUSDT','TIAUSDT','TONUSDT','FETUSDT','RENDERUSDT','JUPUSDT','PYTHUSDT',
         'STRKUSDT','ENAUSDT','EIGENUSDT','ONDOUSDT','MOVEUSDT','MEUSDT','TRUMPUSDT',
-      ];
+      ].map(symbol => ({ symbol, baseAsset: this.deriveTokenName(symbol) })));
+    }
+  }
+
+  private applySymbolList(symbols: { symbol: string; baseAsset: string }[]) {
+    const previous = new Set(this.allSymbols);
+    const next = new Set(symbols.map(s => s.symbol));
+
+    this.allSymbols = symbols.map(s => s.symbol).sort();
+
+    for (const { symbol, baseAsset } of symbols) {
+      this.tokenNames.set(symbol, baseAsset);
+      if (!this.priceHistory.has(symbol)) this.priceHistory.set(symbol, []);
+      if (!previous.has(symbol)) this.logger.log(`Futures symbol listed: ${symbol}`);
     }
 
-    // Initialise price history buckets for all symbols
-    for (const sym of this.allSymbols) {
-      if (!this.priceHistory.has(sym)) this.priceHistory.set(sym, []);
+    for (const symbol of previous) {
+      if (!next.has(symbol)) {
+        this.tokenNames.delete(symbol);
+        this.priceHistory.delete(symbol);
+        this.tickers.delete(symbol);
+        this.logger.warn(`Futures symbol removed: ${symbol}`);
+      }
     }
+
+    this.logger.log(`Active USDT perpetuals: ${this.allSymbols.length}`);
+  }
+
+  private startSymbolRefreshTimer() {
+    const cfg = this.config.get();
+    this.symbolRefreshTimer = setInterval(() => {
+      void this.fetchAllSymbols();
+    }, cfg.symbolRefreshIntervalMs);
   }
 
   // ─── WebSocket ────────────────────────────────────────────────────────────
@@ -151,15 +187,18 @@ export class MarketScannerService implements OnModuleInit, OnModuleDestroy {
 
   private processTickers(tickers: any[]) {
     for (const t of tickers) {
-      // miniTicker format: e=24hrMiniTicker, s=symbol, c=close, v=volume, q=quoteVolume
+      // miniTicker format includes s=symbol, c=close, o=24h open, v=volume, q=quoteVolume
       if (!t.s || !t.s.endsWith('USDT')) continue;
       const price = parseFloat(t.c);
       if (!price || isNaN(price)) continue;
+      const open24h = parseFloat(t.o);
+      const change24h = open24h > 0 ? ((price - open24h) / open24h) * 100 : 0;
 
       this.tickers.set(t.s, {
+        name: this.getTokenName(t.s),
         symbol: t.s,
         price,
-        change24h: 0, // miniTicker doesn't give 24h pct — calculated separately
+        change24h,
         volume24h: parseFloat(t.q) || 0,
         updatedAt: Date.now(),
       });
@@ -167,6 +206,7 @@ export class MarketScannerService implements OnModuleInit, OnModuleDestroy {
       // Add to allSymbols if newly seen
       if (!this.allSymbols.includes(t.s)) {
         this.allSymbols.push(t.s);
+        this.tokenNames.set(t.s, this.deriveTokenName(t.s));
         this.priceHistory.set(t.s, []);
         this.logger.log(`New symbol discovered: ${t.s}`);
       }
@@ -236,6 +276,10 @@ export class MarketScannerService implements OnModuleInit, OnModuleDestroy {
     return this.tickers.get(symbol) ?? null;
   }
 
+  getTokenName(symbol: string): string {
+    return this.tokenNames.get(symbol) ?? this.deriveTokenName(symbol);
+  }
+
   getAllSymbols(): string[] {
     return [...this.allSymbols];
   }
@@ -248,4 +292,8 @@ export class MarketScannerService implements OnModuleInit, OnModuleDestroy {
   getLastUpdate(): Date { return this.lastUpdate; }
   getScanTurn(): number { return this.scanTurn; }
   getSymbolCount(): number { return this.allSymbols.length; }
+
+  private deriveTokenName(symbol: string): string {
+    return symbol.endsWith('USDT') ? symbol.slice(0, -4) : symbol;
+  }
 }

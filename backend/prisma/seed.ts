@@ -14,6 +14,7 @@ async function main() {
     { key: 'hardStopPct', value: '5' },
     { key: 'topCandidatesCount', value: '10' },
     { key: 'scanIntervalMs', value: '5000' },
+    { key: 'symbolRefreshIntervalMs', value: '600000' },
     { key: 'priceHistoryHours', value: '2' },
     { key: 'tradeScoreThreshold', value: '80' },
     { key: 'replacementThreshold', value: '15' },

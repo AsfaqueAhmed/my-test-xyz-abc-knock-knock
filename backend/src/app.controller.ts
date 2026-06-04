@@ -1,4 +1,5 @@
 import { Controller, Get, Post, Put, Param, Body, Query, HttpException, HttpStatus } from '@nestjs/common';
+import { ApiTags } from '@nestjs/swagger';
 import { PositionEngineService } from './position-engine/position-engine.service';
 import { AnalyticsService } from './analytics/analytics.service';
 import { RiskEngineService } from './risk-engine/risk-engine.service';
@@ -9,6 +10,7 @@ import { PortfolioManagerService } from './portfolio-manager/portfolio-manager.s
 import { PrismaService } from './prisma/prisma.service';
 
 @Controller()
+@ApiTags('Trading Platform')
 export class AppController {
   constructor(
     private readonly positions: PositionEngineService,
@@ -51,6 +53,24 @@ export class AppController {
     const weekStats = await this.prisma.performanceStat.findMany({ where: { date: { gte: weekAgo } } });
     const monthAgo = new Date(Date.now() - 30*24*60*60*1000);
     const monthStats = await this.prisma.performanceStat.findMany({ where: { date: { gte: monthAgo } } });
+    const scoreBySymbol = new Map(this.ranker.getAllScores().map(s => [s.symbol, s]));
+    const tickers = this.scanner.getAllTickers().slice(0, 20).map(ticker => {
+      const score = scoreBySymbol.get(ticker.symbol);
+      return {
+        ...ticker,
+        name: ticker.name || this.scanner.getTokenName(ticker.symbol),
+        symbol: ticker.symbol,
+        price: ticker.price,
+        change30s: score?.changes.s30 ?? 0,
+        change1m: score?.changes.m1 ?? 0,
+        change2m: score?.changes.m2 ?? 0,
+        change5m: score?.changes.m5 ?? 0,
+        change10m: score?.changes.m10 ?? 0,
+        change15m: score?.changes.m15 ?? 0,
+        change30m: score?.changes.m30 ?? 0,
+        change24h: ticker.change24h,
+      };
+    });
 
     return {
       balance,
@@ -66,7 +86,7 @@ export class AppController {
       botRunning: botStatus.running,
       botPaused: botStatus.paused,
       emergencyStop: riskStats.emergencyStop,
-      tickers: this.scanner.getAllTickers().slice(0, 20),
+      tickers,
       symbolCount: this.scanner.getSymbolCount(),
       scanTurn: this.scanner.getScanTurn(),
     };
