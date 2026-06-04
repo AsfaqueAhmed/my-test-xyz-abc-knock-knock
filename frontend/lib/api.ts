@@ -63,6 +63,26 @@ export async function fetchTickers() {
   return data;
 }
 
+export async function fetchMarketTokens() {
+  const { data } = await api.get('/market/tokens');
+  return data as MarketToken[];
+}
+
+export interface MarketToken {
+  symbol: string;
+  name: string;
+  price: number;
+  change30s: number;
+  change1m: number;
+  change5m: number;
+  change10m: number;
+  change15m: number;
+  change30m: number;
+  change24h: number;
+  volume24h: number;
+  updatedAt: string | null;
+}
+
 export async function fetchNotifications() {
   const { data } = await api.get('/notifications');
   return data;
