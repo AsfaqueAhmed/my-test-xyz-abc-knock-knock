@@ -1,0 +1,166 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        Int      @id @default(autoincrement())
+  username  String   @unique
+  password  String
+  createdAt DateTime @default(now())
+}
+
+model Symbol {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+}
+
+model Candle {
+  id        BigInt   @id @default(autoincrement())
+  symbol    String
+  timeframe String
+  open      Float
+  high      Float
+  low       Float
+  close     Float
+  volume    Float
+  openTime  DateTime
+  closeTime DateTime
+  createdAt DateTime @default(now())
+
+  @@index([symbol, timeframe, openTime])
+  @@unique([symbol, timeframe, openTime])
+}
+
+model Signal {
+  id             BigInt   @id @default(autoincrement())
+  symbol         String
+  direction      String
+  momentumScore  Float
+  confidence     Float
+  trendDirection String
+  volumeRatio    Float
+  breakoutType   String?
+  acted          Boolean  @default(false)
+  createdAt      DateTime @default(now())
+
+  @@index([symbol, createdAt])
+}
+
+model Position {
+  id              BigInt   @id @default(autoincrement())
+  symbol          String
+  side            String
+  status          String   @default("OPEN_LONG")
+  entryPrice      Float
+  currentPrice    Float    @default(0)
+  quantity        Float    @default(1)
+  leverage        Int      @default(1)
+  hardStop        Float
+  trailingStop    Float?
+  highestPrice    Float?
+  lowestPrice     Float?
+  activationPct   Float
+  trailingPct     Float
+  hardStopPct     Float
+  entryCount      Int      @default(1)
+  avgEntryPrice   Float
+  unrealizedPnl   Float    @default(0)
+  realizedPnl     Float    @default(0)
+  fees            Float    @default(0)
+  exitPrice       Float?
+  exitReason      String?
+  openedAt        DateTime @default(now())
+  closedAt        DateTime?
+  updatedAt       DateTime @updatedAt
+
+  orders          Order[]
+  @@index([symbol, status])
+}
+
+model Order {
+  id         BigInt   @id @default(autoincrement())
+  positionId BigInt
+  position   Position @relation(fields: [positionId], references: [id])
+  type       String
+  side       String
+  price      Float
+  quantity   Float
+  fee        Float    @default(0)
+  createdAt  DateTime @default(now())
+}
+
+model TradeHistory {
+  id          BigInt   @id @default(autoincrement())
+  symbol      String
+  side        String
+  entryPrice  Float
+  exitPrice   Float
+  quantity    Float
+  pnl         Float
+  pnlPct      Float
+  fees        Float
+  duration    Int
+  exitReason  String
+  entryTime   DateTime
+  exitTime    DateTime
+  createdAt   DateTime @default(now())
+
+  @@index([symbol, createdAt])
+}
+
+model PerformanceStat {
+  id            Int      @id @default(autoincrement())
+  date          DateTime @unique
+  dailyPnl      Float    @default(0)
+  totalTrades   Int      @default(0)
+  winningTrades Int      @default(0)
+  losingTrades  Int      @default(0)
+  totalFees     Float    @default(0)
+  maxDrawdown   Float    @default(0)
+  equity        Float    @default(10000)
+  createdAt     DateTime @default(now())
+}
+
+model BotConfig {
+  id                  Int      @id @default(autoincrement())
+  key                 String   @unique
+  value               String
+  updatedAt           DateTime @updatedAt
+}
+
+model RiskEvent {
+  id          BigInt   @id @default(autoincrement())
+  type        String
+  description String
+  severity    String
+  resolved    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+}
+
+model CooldownEvent {
+  id        BigInt   @id @default(autoincrement())
+  symbol    String
+  reason    String
+  startsAt  DateTime
+  endsAt    DateTime
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  @@index([symbol, active])
+}
+
+model Notification {
+  id        BigInt   @id @default(autoincrement())
+  type      String
+  title     String
+  message   String
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+}

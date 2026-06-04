@@ -1,0 +1,102 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #0a0e1a;
+  --bg2: #0f1525;
+  --bg3: #151d35;
+  --border: #1e2d4a;
+  --border2: #243356;
+  --text: #e2e8f5;
+  --text2: #8899bb;
+  --text3: #5566aa;
+  --green: #00d68f;
+  --green2: #00a36e;
+  --red: #ff4757;
+  --red2: #cc3344;
+  --yellow: #ffd32a;
+  --blue: #3d7fff;
+  --blue2: #2563eb;
+  --accent: #6366f1;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  background-color: var(--bg);
+  color: var(--text);
+  font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+  min-height: 100vh;
+}
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--bg2); }
+::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text3); }
+
+.card {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.text-green { color: var(--green); }
+.text-red { color: var(--red); }
+.text-yellow { color: var(--yellow); }
+.text-blue { color: var(--blue); }
+.text-muted { color: var(--text2); }
+.text-dim { color: var(--text3); }
+
+.badge-green { background: rgba(0,214,143,0.1); color: var(--green); border: 1px solid rgba(0,214,143,0.2); padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+.badge-red { background: rgba(255,71,87,0.1); color: var(--red); border: 1px solid rgba(255,71,87,0.2); padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+.badge-yellow { background: rgba(255,211,42,0.1); color: var(--yellow); border: 1px solid rgba(255,211,42,0.2); padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+.badge-blue { background: rgba(61,127,255,0.1); color: var(--blue); border: 1px solid rgba(61,127,255,0.2); padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+.badge-gray { background: rgba(100,120,160,0.1); color: var(--text2); border: 1px solid rgba(100,120,160,0.2); padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+
+.btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px; border-radius: 6px; border: none; cursor: pointer; font-size: 13px; font-weight: 600; font-family: inherit; transition: all 0.15s; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-primary { background: var(--blue2); color: white; }
+.btn-primary:hover:not(:disabled) { background: var(--blue); }
+.btn-green { background: rgba(0,214,143,0.15); color: var(--green); border: 1px solid rgba(0,214,143,0.3); }
+.btn-green:hover:not(:disabled) { background: rgba(0,214,143,0.25); }
+.btn-red { background: rgba(255,71,87,0.15); color: var(--red); border: 1px solid rgba(255,71,87,0.3); }
+.btn-red:hover:not(:disabled) { background: rgba(255,71,87,0.25); }
+.btn-ghost { background: transparent; color: var(--text2); border: 1px solid var(--border); }
+.btn-ghost:hover:not(:disabled) { background: var(--bg3); color: var(--text); }
+.btn-yellow { background: rgba(255,211,42,0.1); color: var(--yellow); border: 1px solid rgba(255,211,42,0.3); }
+.btn-yellow:hover:not(:disabled) { background: rgba(255,211,42,0.2); }
+
+input, select, textarea {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-family: inherit;
+  width: 100%;
+  outline: none;
+}
+input:focus, select:focus, textarea:focus {
+  border-color: var(--blue);
+}
+
+label {
+  color: var(--text2);
+  font-size: 12px;
+  display: block;
+  margin-bottom: 4px;
+}
+
+table { width: 100%; border-collapse: collapse; }
+th { text-align: left; padding: 10px 12px; font-size: 11px; color: var(--text3); font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; border-bottom: 1px solid var(--border); }
+td { padding: 10px 12px; font-size: 13px; border-bottom: 1px solid rgba(30,45,74,0.5); }
+tr:hover td { background: rgba(255,255,255,0.02); }
+tr:last-child td { border-bottom: none; }
+
+.pnl-positive { color: var(--green); }
+.pnl-negative { color: var(--red); }
