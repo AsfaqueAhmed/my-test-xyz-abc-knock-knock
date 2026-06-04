@@ -1,4 +1,4 @@
-import { Injectable, OnModuleInit, Logger, BadRequestException } from '@nestjs/common';
+import { Injectable, OnModuleInit, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 
 export interface BotConfiguration {
@@ -65,7 +65,7 @@ const DEFAULTS: BotConfiguration = {
   maxCapitalPerEntry: 1000,
   initialBalance: 10000,
   leverage: 5,
-  activationPct: 2,
+  activationPct: 5,
   trailingPct: 3,
   hardStopPct: 5,
   topCandidatesCount: 10,
@@ -174,13 +174,7 @@ export class BotConfigService implements OnModuleInit {
   get(): BotConfiguration { return { ...this.config }; }
 
   async update(partial: Partial<BotConfiguration>): Promise<BotConfiguration> {
-    const merged = { ...this.config, ...partial };
-    if (merged.trailingPct < merged.activationPct) {
-      throw new BadRequestException(
-        `Trailing % (${merged.trailingPct}) must be ≥ Activation % (${merged.activationPct})`,
-      );
-    }
-    this.config = merged;
+    this.config = { ...this.config, ...partial };
     for (const [key, value] of Object.entries(partial)) {
       const strValue = typeof value === 'object' ? JSON.stringify(value) : String(value);
       await this.prisma.botConfig.upsert({

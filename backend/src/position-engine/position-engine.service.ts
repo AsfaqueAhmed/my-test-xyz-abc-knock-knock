@@ -215,7 +215,9 @@ export class PositionEngineService implements OnModuleInit {
         updates.status = 'LONG_TRAILING';
       }
       if (pos.status === 'LONG_TRAILING' || updates.status === 'LONG_TRAILING') {
-        const ts = newHighest * (1 - pos.trailingPct / 100);
+        const floor = Number(pos.avgEntryPrice) * (1 + pos.activationPct / 100);
+        const trailing = newHighest * (1 - pos.trailingPct / 100);
+        const ts = Math.max(floor, trailing);
         updates.trailingStop = ts;
         if (price <= ts) { shouldClose = true; exitReason = 'TRAILING_STOP'; }
       }
@@ -229,7 +231,9 @@ export class PositionEngineService implements OnModuleInit {
         updates.status = 'SHORT_TRAILING';
       }
       if (pos.status === 'SHORT_TRAILING' || updates.status === 'SHORT_TRAILING') {
-        const ts = newLowest * (1 + pos.trailingPct / 100);
+        const ceiling = Number(pos.avgEntryPrice) * (1 - pos.activationPct / 100);
+        const trailing = newLowest * (1 + pos.trailingPct / 100);
+        const ts = Math.min(ceiling, trailing);
         updates.trailingStop = ts;
         if (price >= ts) { shouldClose = true; exitReason = 'TRAILING_STOP'; }
       }

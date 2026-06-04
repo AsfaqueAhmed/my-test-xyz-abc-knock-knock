@@ -39,7 +39,6 @@ export default function ConfigPage() {
   const { data: config } = useQuery({ queryKey: ['config'], queryFn: fetchConfig });
   const [form, setForm] = useState<any>({});
   const [saved, setSaved] = useState(false);
-  const [trailingError, setTrailingError] = useState<string | null>(null);
 
   useEffect(() => {
     if (config) setForm({
@@ -59,7 +58,6 @@ export default function ConfigPage() {
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value, type } = e.target;
-    if (name === 'trailingPct' || name === 'activationPct') setTrailingError(null);
     setForm((prev: any) => ({
       ...prev,
       [name]: type === 'number' ? (value === '' ? '' : parseFloat(value)) : type === 'checkbox' ? (e.target as HTMLInputElement).checked : value,
@@ -68,11 +66,6 @@ export default function ConfigPage() {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if ((form.trailingPct ?? 0) < (form.activationPct ?? 0)) {
-      setTrailingError(`Trailing % (${form.trailingPct}) must be ≥ Activation % (${form.activationPct})`);
-      return;
-    }
-    setTrailingError(null);
     const { scanIntervalSec, ...rest } = form;
     mutation.mutate({
       ...rest,
@@ -108,15 +101,9 @@ export default function ConfigPage() {
 
         <Section title="Trailing Stop Algorithm">
           <Field label="Activation %" name="activationPct" value={form.activationPct ?? ''} onChange={handleChange} min={0.1} max={20} step={0.1} hint="Profit % to activate trailing" />
-          <Field label="Trailing %" name="trailingPct" value={form.trailingPct ?? ''} onChange={handleChange} min={0.1} max={20} step={0.1} hint="Trail distance from peak/trough — must be ≥ Activation %" />
+          <Field label="Trailing %" name="trailingPct" value={form.trailingPct ?? ''} onChange={handleChange} min={0.1} max={20} step={0.1} hint="Trail distance from peak/trough" />
           <Field label="Hard Stop %" name="hardStopPct" value={form.hardStopPct ?? ''} onChange={handleChange} min={0.1} max={50} step={0.1} hint="Absolute maximum loss per trade" />
         </Section>
-        {trailingError && (
-          <div style={{ marginTop: -10, marginBottom: 16, padding: '10px 14px', background: 'rgba(255,71,87,0.1)', border: '1px solid rgba(255,71,87,0.3)', borderRadius: 6, fontSize: 12, color: 'var(--red)' }}>
-            ⚠ {trailingError}
-          </div>
-        )}
-
         <Section title="Signal Thresholds">
           <Field label="Trade Score Threshold" name="tradeScoreThreshold" value={form.tradeScoreThreshold ?? ''} onChange={handleChange} min={0} max={100} step={1} hint="Min score (0–100) required to enter a trade" />
           <Field label="Replacement Threshold" name="replacementThreshold" value={form.replacementThreshold ?? ''} onChange={handleChange} min={0} max={100} step={1} hint="Min opportunity score to replace an existing position" />
