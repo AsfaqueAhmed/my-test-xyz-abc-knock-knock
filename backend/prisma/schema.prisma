@@ -128,6 +128,49 @@ model PerformanceStat {
   createdAt     DateTime @default(now())
 }
 
+model PortfolioScore {
+  id                BigInt   @id @default(autoincrement())
+  positionId        BigInt
+  symbol            String
+  side              String
+  score             Float
+  momentum          Float
+  trendScore        Float
+  profitScore       Float
+  volumeScore       Float
+  tradeScore        Float
+  inTrailingMode    Boolean
+  makingNewExtremes Boolean
+  protected         Boolean
+  createdAt         DateTime @default(now())
+
+  @@index([positionId, createdAt])
+  @@index([symbol, createdAt])
+}
+
+model CandidateScore {
+  id             BigInt   @id @default(autoincrement())
+  symbol         String
+  direction      String
+  score          Float
+  momentumScore  Float
+  trendScore     Float
+  volumeScore    Float
+  breakoutScore  Float
+  candleScore    Float
+  liquidityScore Float
+  volumeRatio    Float
+  quoteVolume24h Float
+  openInterest   Float
+  openInterestNotional Float
+  passed         Boolean
+  reasons        String
+  createdAt      DateTime @default(now())
+
+  @@index([symbol, createdAt])
+  @@index([score, createdAt])
+}
+
 model BotConfig {
   id                  Int      @id @default(autoincrement())
   key                 String   @unique

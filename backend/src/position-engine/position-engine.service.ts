@@ -51,29 +51,35 @@ export class PositionEngineService implements OnModuleInit {
 
   // ─── Position Opening ─────────────────────────────────────────────────────
 
-  async tryOpen(candidate: TradeValidationResult) {
+  async tryOpen(candidate: TradeValidationResult): Promise<boolean> {
     const cfg = this.config.get();
     const { symbol, direction } = candidate;
     const side = direction as 'LONG' | 'SHORT';
-
-    const riskCheck = await this.risk.checkRisk(symbol, side, cfg.maxCapitalPerEntry);
-    if (!riskCheck.allowed) { this.logger.debug(`Risk denied ${symbol}: ${riskCheck.reason}`); return; }
-
-    const cooldownCheck = await this.risk.checkCooldown(symbol);
-    if (!cooldownCheck.allowed) { this.logger.debug(`Cooldown ${symbol}: ${cooldownCheck.reason}`); return; }
 
     // Check for existing position to pyramid
     const existing = await this.prisma.position.findFirst({
       where: { symbol, side, status: { in: ['OPEN_LONG','LONG_TRAILING','OPEN_SHORT','SHORT_TRAILING'] } },
     });
 
+    const riskCheck = await this.risk.checkRisk(symbol, side, cfg.maxCapitalPerEntry, {
+      ignorePositionLimit: !!existing,
+    });
+    if (!riskCheck.allowed) { this.logger.debug(`Risk denied ${symbol}: ${riskCheck.reason}`); return false; }
+
+    const cooldownCheck = await this.risk.checkCooldown(symbol);
+    if (!cooldownCheck.allowed) { this.logger.debug(`Cooldown ${symbol}: ${cooldownCheck.reason}`); return false; }
+
+    let executed = false;
     if (existing) {
-      await this.pyramid(existing, candidate);
+      executed = await this.pyramid(existing, candidate);
     } else {
-      await this.openNew(symbol, side, candidate);
+      executed = await this.openNew(symbol, side, candidate);
     }
 
+    if (!executed) return false;
+
     await this.risk.trackEntry(symbol);
+    await this.persistSignal(candidate);
 
     // Mark signal as acted
     try {
@@ -82,12 +88,13 @@ export class PositionEngineService implements OnModuleInit {
         data: { acted: true },
       });
     } catch (_) {}
+    return true;
   }
 
-  private async openNew(symbol: string, side: 'LONG' | 'SHORT', candidate: TradeValidationResult) {
+  private async openNew(symbol: string, side: 'LONG' | 'SHORT', candidate: TradeValidationResult): Promise<boolean> {
     const cfg = this.config.get();
     const price = this.scanner.getCurrentPrice(symbol);
-    if (!price) return;
+    if (!price) return false;
 
     const capital = Math.min(cfg.maxCapitalPerEntry, this.balance * 0.1);
     const quantity = (capital * cfg.leverage) / price;
@@ -126,18 +133,24 @@ export class PositionEngineService implements OnModuleInit {
     await this.notify('POSITION_OPENED', `${side} opened`, `${symbol} @ $${price.toFixed(4)} score=${candidate.tradeScore.toFixed(1)}`);
     this.logger.log(`Opened ${side} ${symbol} @ ${price} (score ${candidate.tradeScore.toFixed(1)})`);
     this.events.emit('position.opened', position);
+    return true;
   }
 
-  private async pyramid(position: any, candidate: TradeValidationResult) {
+  private async pyramid(position: any, candidate: TradeValidationResult): Promise<boolean> {
     const cfg = this.config.get();
-    if (position.entryCount >= cfg.maxEntriesPerSymbol) return;
+    if (position.entryCount >= cfg.maxEntriesPerSymbol) return false;
 
     const price = this.scanner.getCurrentPrice(position.symbol);
-    if (!price) return;
+    if (!price) return false;
 
     const isLong = position.side === 'LONG';
-    const isProfitable = isLong ? price > position.entryPrice : price < position.entryPrice;
-    if (!isProfitable) return;
+    const isProfitable = isLong ? price > Number(position.avgEntryPrice) : price < Number(position.avgEntryPrice);
+    if (!isProfitable) return false;
+
+    const momentumStrong = candidate.momentumScore >= 50;
+    const breakoutConfirmed = candidate.breakoutScore > 0;
+    const scoreImproving = candidate.tradeScore >= cfg.tradeScoreThreshold;
+    if (!momentumStrong || !breakoutConfirmed || !scoreImproving) return false;
 
     const capital = Math.min(cfg.maxCapitalPerEntry, this.balance * 0.1);
     const newQty = (capital * cfg.leverage) / price;
@@ -157,6 +170,7 @@ export class PositionEngineService implements OnModuleInit {
     });
 
     this.logger.log(`Pyramided ${position.symbol} ${position.side} @ ${price} (entry ${position.entryCount + 1})`);
+    return true;
   }
 
   // ─── Position Update Loop ─────────────────────────────────────────────────
@@ -272,6 +286,27 @@ export class PositionEngineService implements OnModuleInit {
 
   private async notify(type: string, title: string, message: string) {
     try { await this.prisma.notification.create({ data: { type, title, message } }); } catch (_) {}
+  }
+
+  private async persistSignal(candidate: TradeValidationResult) {
+    try {
+      await this.prisma.signal.create({
+        data: {
+          symbol: candidate.symbol,
+          direction: candidate.direction,
+          momentumScore: candidate.momentumScore / 100,
+          confidence: candidate.tradeScore / 100,
+          trendDirection: candidate.trendScore >= 100
+            ? (candidate.direction === 'LONG' ? 'BULLISH' : 'BEARISH')
+            : 'NEUTRAL',
+          volumeRatio: candidate.volumeRatio,
+          breakoutType: candidate.breakoutScore > 0
+            ? (candidate.direction === 'LONG' ? 'BULLISH' : 'BEARISH')
+            : null,
+          acted: true,
+        },
+      });
+    } catch (_) {}
   }
 
   getBalance() { return this.balance; }

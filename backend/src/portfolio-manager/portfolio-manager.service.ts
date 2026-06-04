@@ -32,6 +32,7 @@ export class PortfolioManagerService {
 
   // Latest candidate scores from this turn
   private lastCandidates: TradeValidationResult[] = [];
+  private lastValidationByPositionSide: Map<string, TradeValidationResult> = new Map();
 
   private botRunning = false;
   private botPaused = false;
@@ -74,7 +75,8 @@ export class PortfolioManagerService {
       ...topBearish.map(c => ({ ...c, direction: 'SHORT' as const })),
     ];
 
-    const validatedCandidates: TradeValidationResult[] = [];
+    const allValidations: TradeValidationResult[] = [];
+    const passingCandidates: TradeValidationResult[] = [];
 
     for (const candidate of allCandidates) {
       try {
@@ -83,10 +85,12 @@ export class PortfolioManagerService {
 
         const analysis = await this.deepAnalysis.analyse(candidate.symbol, candidate.direction);
         const validation = this.validator.validate(momentum, analysis);
+        allValidations.push(validation);
+        this.lastValidationByPositionSide.set(`${validation.symbol}:${validation.direction}`, validation);
 
         if (validation.passed) {
           this.ranker.recordPass(candidate.symbol);
-          validatedCandidates.push(validation);
+          passingCandidates.push(validation);
         } else {
           this.ranker.recordFailure(candidate.symbol, turn);
         }
@@ -96,15 +100,10 @@ export class PortfolioManagerService {
       }
     }
 
-    this.lastCandidates = validatedCandidates;
+    this.lastCandidates = allValidations.sort((a, b) => b.tradeScore - a.tradeScore);
+    await this.persistCandidateScores(this.lastCandidates);
 
-    // Persist passing signals
-    for (const v of validatedCandidates) {
-      await this.persistSignal(v);
-    }
-
-    // Allocate capital
-    await this.allocateCapital(validatedCandidates, turn);
+    await this.allocateCapital(passingCandidates, turn);
   }
 
   // ─── Position Scoring ─────────────────────────────────────────────────────
@@ -120,6 +119,8 @@ export class PortfolioManagerService {
       const score = await this.calcPositionStrength(pos);
       this.positionScores.set(String(pos.id), score);
     }
+
+    await this.persistPositionScores(Array.from(this.positionScores.values()));
   }
 
   private async calcPositionStrength(pos: any): Promise<PositionStrengthScore> {
@@ -127,38 +128,39 @@ export class PortfolioManagerService {
     const currentPrice = this.scanner.getCurrentPrice(pos.symbol);
     const isLong = pos.side === 'LONG';
     const inTrailing = pos.status === 'LONG_TRAILING' || pos.status === 'SHORT_TRAILING';
+    const lastValidation = this.lastValidationByPositionSide.get(`${pos.symbol}:${pos.side}`);
 
-    // Momentum component (0-40)
+    // Momentum component (0-30)
     let momentumScore = 0;
     if (momentum) {
       const absScore = Math.abs(momentum.score);
       const directionMatch = isLong
         ? momentum.direction === 'BULLISH'
         : momentum.direction === 'BEARISH';
-      momentumScore = directionMatch ? Math.min(absScore / 2 * 40, 40) : 0;
+      momentumScore = directionMatch ? Math.min(absScore / 2 * 30, 30) : 0;
     }
 
-    // Profit component (0-30) — reward profitable positions
+    // Profit component (0-25) — reward profitable positions
     let profitScore = 0;
     if (currentPrice && pos.avgEntryPrice) {
       const pnlPct = isLong
         ? (currentPrice - Number(pos.avgEntryPrice)) / Number(pos.avgEntryPrice) * 100
         : (Number(pos.avgEntryPrice) - currentPrice) / Number(pos.avgEntryPrice) * 100;
-      profitScore = Math.min(Math.max(pnlPct * 3, 0), 30);
+      profitScore = Math.min(Math.max(pnlPct * 2.5, 0), 25);
     }
 
     // Trailing mode bonus (0-10) — reward positions that earned trailing protection
-    const trailingBonus = inTrailing ? 10 : 0;
+    const trailingBonus = inTrailing ? 5 : 0;
 
     // New extreme activity (0-10) — is it still making new highs/lows?
     let extremeScore = 0;
     let makingNewExtremes = false;
     if (inTrailing && currentPrice) {
       if (isLong && pos.highestPrice && currentPrice >= Number(pos.highestPrice) * 0.999) {
-        extremeScore = 10;
+        extremeScore = 5;
         makingNewExtremes = true;
       } else if (!isLong && pos.lowestPrice && currentPrice <= Number(pos.lowestPrice) * 1.001) {
-        extremeScore = 10;
+        extremeScore = 5;
         makingNewExtremes = true;
       }
     }
@@ -168,7 +170,9 @@ export class PortfolioManagerService {
     const ticker = this.scanner.getTicker(pos.symbol);
     if (ticker) volumeScore = Math.min(ticker.volume24h / 1_000_000, 10);
 
-    const totalScore = momentumScore + profitScore + trailingBonus + extremeScore + volumeScore;
+    const trendScore = lastValidation ? lastValidation.trendScore * 0.15 : 0;
+    const tradeScore = lastValidation ? lastValidation.tradeScore * 0.10 : 0;
+    const totalScore = momentumScore + profitScore + trailingBonus + extremeScore + volumeScore + trendScore + tradeScore;
 
     // PROTECTED: never replace if trailing AND making new extremes AND momentum positive
     const protected_ = inTrailing && makingNewExtremes && momentumScore > 0;
@@ -179,10 +183,10 @@ export class PortfolioManagerService {
       side: pos.side,
       score: Math.min(totalScore, 100),
       momentum: momentumScore,
-      trendScore: 0,
+      trendScore,
       profitScore,
       volumeScore,
-      tradeScore: 0,
+      tradeScore,
       inTrailingMode: inTrailing,
       makingNewExtremes,
       protected: protected_,
@@ -245,21 +249,51 @@ export class PortfolioManagerService {
     return scores[0] ?? null;
   }
 
-  // ─── Signal Persistence ───────────────────────────────────────────────────
+  // ─── Score Persistence ────────────────────────────────────────────────────
 
-  private async persistSignal(v: TradeValidationResult) {
+  private async persistPositionScores(scores: PositionStrengthScore[]) {
+    if (scores.length === 0) return;
     try {
-      await this.prisma.signal.create({
-        data: {
+      await this.prisma.portfolioScore.createMany({
+        data: scores.map(s => ({
+          positionId: BigInt(s.positionId),
+          symbol: s.symbol,
+          side: s.side,
+          score: s.score,
+          momentum: s.momentum,
+          trendScore: s.trendScore,
+          profitScore: s.profitScore,
+          volumeScore: s.volumeScore,
+          tradeScore: s.tradeScore,
+          inTrailingMode: s.inTrailingMode,
+          makingNewExtremes: s.makingNewExtremes,
+          protected: s.protected,
+        })),
+      });
+    } catch (_) {}
+  }
+
+  private async persistCandidateScores(candidates: TradeValidationResult[]) {
+    if (candidates.length === 0) return;
+    try {
+      await this.prisma.candidateScore.createMany({
+        data: candidates.map(v => ({
           symbol: v.symbol,
           direction: v.direction,
-          momentumScore: v.momentumScore / 100,
-          confidence: v.tradeScore / 100,
-          trendDirection: v.trendScore >= 100 ? (v.direction === 'LONG' ? 'BULLISH' : 'BEARISH') : 'NEUTRAL',
-          volumeRatio: v.volumeScore / 100,
-          breakoutType: v.breakoutScore > 0 ? (v.direction === 'LONG' ? 'BULLISH' : 'BEARISH') : null,
-          acted: false,
-        },
+          score: v.tradeScore,
+          momentumScore: v.momentumScore,
+          trendScore: v.trendScore,
+          volumeScore: v.volumeScore,
+          breakoutScore: v.breakoutScore,
+          candleScore: v.candleScore,
+          liquidityScore: v.liquidityScore,
+          volumeRatio: v.volumeRatio,
+          quoteVolume24h: v.quoteVolume24h,
+          openInterest: v.openInterest,
+          openInterestNotional: v.openInterestNotional,
+          passed: v.passed,
+          reasons: v.reasons.join(' | '),
+        })),
       });
     } catch (_) {}
   }

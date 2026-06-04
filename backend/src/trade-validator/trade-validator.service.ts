@@ -12,6 +12,11 @@ export interface TradeValidationResult {
   volumeScore: number;
   breakoutScore: number;
   candleScore: number;
+  liquidityScore: number;
+  volumeRatio: number;
+  quoteVolume24h: number;
+  openInterest: number;
+  openInterestNotional: number;
   passed: boolean;
   reasons: string[];
 }
@@ -59,6 +64,11 @@ export class TradeValidatorService {
       volumeScore: analysis.volumeScore,
       breakoutScore: analysis.breakoutScore,
       candleScore: analysis.candleScore,
+      liquidityScore: analysis.liquidityScore,
+      volumeRatio: analysis.volumeRatio,
+      quoteVolume24h: analysis.quoteVolume24h,
+      openInterest: analysis.openInterest,
+      openInterestNotional: analysis.openInterestNotional,
       passed,
       reasons,
     };

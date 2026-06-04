@@ -19,6 +19,12 @@ export interface DeepAnalysisResult {
   breakoutConfirmed: boolean;
   atr: number;
   atrPct: number;
+  rangeExpansion: number;
+  liquidityScore: number;
+  quoteVolume24h: number;
+  openInterest: number;
+  openInterestNotional: number;
+  liquidityPassed: boolean;
   ema20: number; ema50: number; ema200: number;
   reasons: string[];
   passed: boolean;          // passed all minimum thresholds
@@ -30,6 +36,7 @@ export class DeepAnalysisService {
 
   // Cache candles per symbol+interval to avoid hammering Binance REST
   private candleCache: Map<string, { data: CandleData[]; fetchedAt: number }> = new Map();
+  private openInterestCache: Map<string, { openInterest: number; notional: number; fetchedAt: number }> = new Map();
   private readonly CACHE_TTL = 55_000; // refresh every 55s (candles are 1m)
 
   constructor(
@@ -47,6 +54,7 @@ export class DeepAnalysisService {
     ]);
 
     const currentPrice = this.scanner.getCurrentPrice(symbol);
+    const cfg = this.config.get();
 
     // ── Trend Analysis (EMA on 1m) ─────────────────────────────────────────
     const closes1m = candles1m.map(c => c.close);
@@ -128,10 +136,34 @@ export class DeepAnalysisService {
     // ── ATR / Volatility (14-period on 5m) ─────────────────────────────────
     const atr = this.calcATR(candles5m, 14);
     const atrPct = currentPrice > 0 ? (atr / currentPrice) * 100 : 0;
+    const rangeExpansion = this.calcRangeExpansion(candles5m);
 
     // Reject extreme volatility (ATR% > 5% on 5m is dangerous)
     if (atrPct > 5) {
       reasons.push(`High volatility ATR ${atrPct.toFixed(2)}%`);
+    }
+
+    if (rangeExpansion > cfg.maxRangeExpansionRatio) {
+      reasons.push(`Range expansion ${rangeExpansion.toFixed(2)}x exceeds ${cfg.maxRangeExpansionRatio}x`);
+    }
+
+    // ── Liquidity Analysis ─────────────────────────────────────────────────
+    const ticker = this.scanner.getTicker(symbol);
+    const quoteVolume24h = ticker?.volume24h ?? 0;
+    const oi = await this.fetchOpenInterest(symbol, currentPrice);
+    const liquidityPassed =
+      quoteVolume24h >= cfg.minQuoteVolume24h &&
+      oi.notional >= cfg.minOpenInterestNotional;
+    const liquidityScore = Math.min(
+      100,
+      Math.min(quoteVolume24h / cfg.minQuoteVolume24h, 1) * 50 +
+      Math.min(oi.notional / cfg.minOpenInterestNotional, 1) * 50,
+    );
+
+    if (liquidityPassed) {
+      reasons.push(`Liquidity confirmed volume=$${quoteVolume24h.toFixed(0)} OI=$${oi.notional.toFixed(0)}`);
+    } else {
+      reasons.push(`Low liquidity volume=$${quoteVolume24h.toFixed(0)} OI=$${oi.notional.toFixed(0)}`);
     }
 
     // ── Minimum pass thresholds ─────────────────────────────────────────────
@@ -139,13 +171,19 @@ export class DeepAnalysisService {
       trendScore >= 100 &&
       volumeRatio >= 1.5 &&
       breakoutConfirmed &&
-      atrPct <= 5;
+      atrPct <= 5 &&
+      rangeExpansion <= cfg.maxRangeExpansionRatio &&
+      liquidityPassed;
 
     return {
       symbol, direction,
       trendScore, volumeScore, breakoutScore, candleScore,
       trendDirection, volumeRatio, breakoutConfirmed,
-      atr, atrPct,
+      atr, atrPct, rangeExpansion,
+      liquidityScore, quoteVolume24h,
+      openInterest: oi.openInterest,
+      openInterestNotional: oi.notional,
+      liquidityPassed,
       ema20, ema50, ema200,
       reasons, passed,
     };
@@ -233,6 +271,43 @@ export class DeepAnalysisService {
     }
     const slice = trs.slice(-period);
     return slice.reduce((a, b) => a + b, 0) / slice.length;
+  }
+
+  private calcRangeExpansion(candles: CandleData[]): number {
+    if (candles.length < 3) return 1;
+    const last = candles[candles.length - 1];
+    const lastRange = Math.max(last.high - last.low, 0);
+    const prior = candles.slice(-11, -1);
+    const avgRange = prior.reduce((sum, c) => sum + Math.max(c.high - c.low, 0), 0) / prior.length;
+    if (!avgRange) return 1;
+    return lastRange / avgRange;
+  }
+
+  private async fetchOpenInterest(symbol: string, price: number): Promise<{ openInterest: number; notional: number }> {
+    const cached = this.openInterestCache.get(symbol);
+    if (cached && Date.now() - cached.fetchedAt < this.CACHE_TTL) {
+      return { openInterest: cached.openInterest, notional: cached.notional };
+    }
+
+    try {
+      const https = require('https');
+      const url = `https://fapi.binance.com/fapi/v1/openInterest?symbol=${symbol}`;
+      const raw = await new Promise<string>((resolve, reject) => {
+        https.get(url, (res: any) => {
+          let d = ''; res.on('data', (c: any) => d += c); res.on('end', () => resolve(d));
+        }).on('error', reject);
+      });
+      const json = JSON.parse(raw);
+      const openInterest = parseFloat(json.openInterest) || 0;
+      const notional = openInterest * price;
+      this.openInterestCache.set(symbol, { openInterest, notional, fetchedAt: Date.now() });
+      return { openInterest, notional };
+    } catch (err) {
+      this.logger.warn(`Failed to fetch ${symbol} open interest: ${err.message}`);
+      return cached
+        ? { openInterest: cached.openInterest, notional: cached.notional }
+        : { openInterest: 0, notional: 0 };
+    }
   }
 
   // ─── Candle Fetcher ──────────────────────────────────────────────────────

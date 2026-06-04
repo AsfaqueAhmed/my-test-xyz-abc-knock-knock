@@ -7,11 +7,14 @@ export interface RiskCheck {
   reason?: string;
 }
 
+export interface RiskCheckOptions {
+  ignorePositionLimit?: boolean;
+}
+
 @Injectable()
 export class RiskEngineService {
   private readonly logger = new Logger(RiskEngineService.name);
   private dailyPnl = 0;
-  private totalExposure = 0;
   private emergencyStop = false;
   private lastDailyReset = new Date().toDateString();
 
@@ -28,7 +31,12 @@ export class RiskEngineService {
     }
   }
 
-  async checkRisk(symbol: string, side: 'LONG' | 'SHORT', capital: number): Promise<RiskCheck> {
+  async checkRisk(
+    symbol: string,
+    side: 'LONG' | 'SHORT',
+    capital: number,
+    options: RiskCheckOptions = {},
+  ): Promise<RiskCheck> {
     await this.checkDailyReset();
     const config = this.botConfig.get();
 
@@ -50,8 +58,17 @@ export class RiskEngineService {
       where: { status: { in: ['OPEN_LONG', 'LONG_TRAILING', 'OPEN_SHORT', 'SHORT_TRAILING'] } },
     });
 
-    if (openPositions >= config.maxActivePositions) {
+    if (!options.ignorePositionLimit && openPositions >= config.maxActivePositions) {
       return { allowed: false, reason: `Max active positions reached (${openPositions}/${config.maxActivePositions})` };
+    }
+
+    const exposure = await this.getCurrentExposure();
+    const maxExposure = config.initialBalance * (config.maxExposurePct / 100);
+    if (exposure + capital > maxExposure) {
+      return {
+        allowed: false,
+        reason: `Max exposure exceeded ($${(exposure + capital).toFixed(2)}/$${maxExposure.toFixed(2)})`,
+      };
     }
 
     // Check per-symbol entries
@@ -115,6 +132,18 @@ export class RiskEngineService {
     }
   }
 
+  private async getCurrentExposure(): Promise<number> {
+    const openPositions = await this.prisma.position.findMany({
+      where: { status: { in: ['OPEN_LONG', 'LONG_TRAILING', 'OPEN_SHORT', 'SHORT_TRAILING'] } },
+      select: { avgEntryPrice: true, quantity: true, leverage: true },
+    });
+
+    return openPositions.reduce((sum, p) => {
+      const leverage = p.leverage || 1;
+      return sum + (Number(p.avgEntryPrice) * Number(p.quantity)) / leverage;
+    }, 0);
+  }
+
   updateDailyPnl(pnl: number) {
     this.dailyPnl += pnl;
   }
@@ -151,6 +180,7 @@ export class RiskEngineService {
       emergencyStop: this.emergencyStop,
       dailyPnl: this.dailyPnl,
       openPositions,
+      exposure: await this.getCurrentExposure(),
       riskEvents,
       cooldowns,
     };
