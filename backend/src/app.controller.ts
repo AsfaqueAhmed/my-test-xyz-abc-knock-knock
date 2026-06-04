@@ -1,23 +1,23 @@
-import {
-  Controller, Get, Post, Put, Param, Body, Query, HttpException, HttpStatus
-} from '@nestjs/common';
+import { Controller, Get, Post, Put, Param, Body, Query, HttpException, HttpStatus } from '@nestjs/common';
 import { PositionEngineService } from './position-engine/position-engine.service';
-import { SignalEngineService } from './signal-engine/signal-engine.service';
 import { AnalyticsService } from './analytics/analytics.service';
 import { RiskEngineService } from './risk-engine/risk-engine.service';
 import { BotConfigService } from './config/bot-config.service';
-import { MarketDataService } from './market-data/market-data.service';
+import { MarketScannerService } from './market-scanner/market-scanner.service';
+import { MomentumRankerService } from './momentum-ranker/momentum-ranker.service';
+import { PortfolioManagerService } from './portfolio-manager/portfolio-manager.service';
 import { PrismaService } from './prisma/prisma.service';
 
 @Controller()
 export class AppController {
   constructor(
     private readonly positions: PositionEngineService,
-    private readonly signals: SignalEngineService,
     private readonly analytics: AnalyticsService,
     private readonly risk: RiskEngineService,
     private readonly botConfig: BotConfigService,
-    private readonly marketData: MarketDataService,
+    private readonly scanner: MarketScannerService,
+    private readonly ranker: MomentumRankerService,
+    private readonly portfolio: PortfolioManagerService,
     private readonly prisma: PrismaService,
   ) {}
 
@@ -26,39 +26,39 @@ export class AppController {
     return {
       status: 'ok',
       database: 'connected',
-      binance: this.marketData.isWsConnected() ? 'connected' : 'disconnected',
-      websocket: this.marketData.isWsConnected(),
-      lastMarketUpdate: this.marketData.getLastUpdate(),
+      binance: this.scanner.isConnected() ? 'connected' : 'disconnected',
+      websocket: this.scanner.isConnected(),
+      lastMarketUpdate: this.scanner.getLastUpdate(),
+      symbolCount: this.scanner.getSymbolCount(),
+      scanTurn: this.scanner.getScanTurn(),
       timestamp: new Date(),
     };
   }
 
   @Get('dashboard')
   async getDashboard() {
-    const botStatus = this.positions.getBotStatus();
+    const botStatus = this.portfolio.getStatus();
+    const balance = this.positions.getBalance();
     const openPositions = await this.positions.getOpenPositions();
     const stats = await this.analytics.getSummaryStats();
     const riskStats = await this.risk.getStats();
-    const tickers = this.marketData.getAllTickers();
-    const unrealizedPnl = openPositions.reduce((s, p) => s + (Number(p.unrealizedPnl) || 0), 0);
-    const equity = botStatus.balance + unrealizedPnl;
+    const unrealizedPnl = openPositions.reduce((s, p) => s + Number(p.unrealizedPnl || 0), 0);
+    const equity = balance + unrealizedPnl;
 
     const today = new Date(); today.setHours(0,0,0,0);
     const todayStats = await this.prisma.performanceStat.findUnique({ where: { date: today } });
     const weekAgo = new Date(Date.now() - 7*24*60*60*1000);
     const weekStats = await this.prisma.performanceStat.findMany({ where: { date: { gte: weekAgo } } });
-    const weeklyPnl = weekStats.reduce((s, d) => s + d.dailyPnl, 0);
     const monthAgo = new Date(Date.now() - 30*24*60*60*1000);
     const monthStats = await this.prisma.performanceStat.findMany({ where: { date: { gte: monthAgo } } });
-    const monthlyPnl = monthStats.reduce((s, d) => s + d.dailyPnl, 0);
 
     return {
-      balance: botStatus.balance,
+      balance,
       equity,
       unrealizedPnl,
-      dailyPnl: todayStats?.dailyPnl || riskStats.dailyPnl,
-      weeklyPnl,
-      monthlyPnl,
+      dailyPnl: todayStats?.dailyPnl ?? riskStats.dailyPnl,
+      weeklyPnl: weekStats.reduce((s, d) => s + d.dailyPnl, 0),
+      monthlyPnl: monthStats.reduce((s, d) => s + d.dailyPnl, 0),
       winRate: stats.winRate,
       profitFactor: stats.profitFactor,
       totalTrades: stats.totalTrades,
@@ -66,7 +66,9 @@ export class AppController {
       botRunning: botStatus.running,
       botPaused: botStatus.paused,
       emergencyStop: riskStats.emergencyStop,
-      tickers,
+      tickers: this.scanner.getAllTickers().slice(0, 20),
+      symbolCount: this.scanner.getSymbolCount(),
+      scanTurn: this.scanner.getScanTurn(),
     };
   }
 
@@ -97,9 +99,42 @@ export class AppController {
   }
 
   @Get('signals')
-  async getSignals(@Query('live') live?: string) {
-    if (live === 'true') return this.signals.analyzeAll();
-    return this.signals.getLatestSignals();
+  async getSignals() {
+    return this.prisma.signal.findMany({ orderBy: { createdAt: 'desc' }, take: 100 });
+  }
+
+  // Live scanner state
+  @Get('scanner/ranking')
+  getRanking() {
+    return {
+      topBullish: this.ranker.getTopBullish(),
+      topBearish: this.ranker.getTopBearish(),
+      turn: this.scanner.getScanTurn(),
+    };
+  }
+
+  @Get('scanner/scores')
+  getScores(@Query('limit') limit?: string) {
+    const all = this.ranker.getAllScores();
+    const n = limit ? parseInt(limit) : 50;
+    return all
+      .sort((a, b) => Math.abs(b.score) - Math.abs(a.score))
+      .slice(0, n);
+  }
+
+  @Get('scanner/false-alarms')
+  getFalseAlarms() {
+    return this.ranker.getAllFalseAlarms().filter(f => f.offenseCount > 0 || f.consecutiveFailures > 0);
+  }
+
+  @Get('portfolio/scores')
+  getPortfolioScores() {
+    return this.portfolio.getPositionScores();
+  }
+
+  @Get('portfolio/candidates')
+  getCandidates() {
+    return this.portfolio.getLastCandidates();
   }
 
   @Get('analytics')
@@ -125,23 +160,23 @@ export class AppController {
 
   @Post('bot/start')
   async startBot() {
-    this.positions.startBot();
+    this.portfolio.start();
     await this.botConfig.setTradingEnabled(true);
     return { status: 'started' };
   }
 
   @Post('bot/stop')
   async stopBot() {
-    this.positions.stopBot();
+    this.portfolio.stop();
     await this.botConfig.setTradingEnabled(false);
     return { status: 'stopped' };
   }
 
   @Post('bot/pause')
-  pauseBot() { this.positions.pauseBot(); return { status: 'paused' }; }
+  pauseBot() { this.portfolio.pause(); return { status: 'paused' }; }
 
   @Post('bot/resume')
-  resumeBot() { this.positions.resumeBot(); return { status: 'resumed' }; }
+  resumeBot() { this.portfolio.resume(); return { status: 'resumed' }; }
 
   @Post('bot/close-all')
   async closeAll() { await this.positions.closeAllPositions(); return { success: true }; }
@@ -150,7 +185,7 @@ export class AppController {
   async emergencyStop() {
     await this.risk.triggerEmergencyStop();
     await this.positions.closeAllPositions();
-    this.positions.stopBot();
+    this.portfolio.stop();
     return { status: 'emergency_stopped' };
   }
 
@@ -166,10 +201,5 @@ export class AppController {
   }
 
   @Get('market/tickers')
-  getTickers() { return this.marketData.getAllTickers(); }
-
-  @Get('market/candles/:symbol/:timeframe')
-  getCandles(@Param('symbol') symbol: string, @Param('timeframe') timeframe: string, @Query('limit') limit?: string) {
-    return this.marketData.getCandles(symbol, timeframe, limit ? parseInt(limit) : 100);
-  }
+  getTickers() { return this.scanner.getAllTickers(); }
 }

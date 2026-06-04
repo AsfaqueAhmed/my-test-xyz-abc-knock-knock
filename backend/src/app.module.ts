@@ -3,20 +3,16 @@ import { ConfigModule } from '@nestjs/config';
 import { ScheduleModule } from '@nestjs/schedule';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { PrismaModule } from './prisma/prisma.module';
-import { MarketDataModule } from './market-data/market-data.module';
-import { IndicatorsModule } from './indicators/indicators.module';
-import { SignalEngineModule } from './signal-engine/signal-engine.module';
+import { BotConfigModule } from './config/bot-config.module';
+import { MarketScannerModule } from './market-scanner/market-scanner.module';
+import { MomentumRankerModule } from './momentum-ranker/momentum-ranker.module';
+import { DeepAnalysisModule } from './deep-analysis/deep-analysis.module';
+import { TradeValidatorModule } from './trade-validator/trade-validator.module';
+import { PortfolioManagerModule } from './portfolio-manager/portfolio-manager.module';
 import { PositionEngineModule } from './position-engine/position-engine.module';
 import { RiskEngineModule } from './risk-engine/risk-engine.module';
 import { AnalyticsModule } from './analytics/analytics.module';
-import { BotConfigModule } from './config/bot-config.module';
 import { AppController } from './app.controller';
-import { PositionEngineService } from './position-engine/position-engine.service';
-import { SignalEngineService } from './signal-engine/signal-engine.service';
-import { AnalyticsService } from './analytics/analytics.service';
-import { RiskEngineService } from './risk-engine/risk-engine.service';
-import { BotConfigService } from './config/bot-config.service';
-import { MarketDataService } from './market-data/market-data.service';
 
 @Module({
   imports: [
@@ -24,11 +20,13 @@ import { MarketDataService } from './market-data/market-data.service';
     ScheduleModule.forRoot(),
     EventEmitterModule.forRoot(),
     PrismaModule,
-    MarketDataModule,
-    IndicatorsModule,
-    SignalEngineModule,
-    RiskEngineModule,
     BotConfigModule,
+    MarketScannerModule,
+    MomentumRankerModule,
+    DeepAnalysisModule,
+    TradeValidatorModule,
+    RiskEngineModule,
+    PortfolioManagerModule,
     PositionEngineModule,
     AnalyticsModule,
   ],

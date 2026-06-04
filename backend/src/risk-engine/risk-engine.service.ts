@@ -50,8 +50,8 @@ export class RiskEngineService {
       where: { status: { in: ['OPEN_LONG', 'LONG_TRAILING', 'OPEN_SHORT', 'SHORT_TRAILING'] } },
     });
 
-    if (openPositions >= config.maxActiveSymbols) {
-      return { allowed: false, reason: `Max active positions reached (${openPositions}/${config.maxActiveSymbols})` };
+    if (openPositions >= config.maxActivePositions) {
+      return { allowed: false, reason: `Max active positions reached (${openPositions}/${config.maxActivePositions})` };
     }
 
     // Check per-symbol entries

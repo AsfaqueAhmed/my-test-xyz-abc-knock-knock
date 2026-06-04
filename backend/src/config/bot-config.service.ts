@@ -2,27 +2,60 @@ import { Injectable, OnModuleInit, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 
 export interface BotConfiguration {
-  maxActiveSymbols: number;
+  // Portfolio
+  maxActivePositions: number;
   maxEntriesPerSymbol: number;
   maxCapitalPerEntry: number;
   initialBalance: number;
   leverage: number;
+
+  // Position management
   activationPct: number;
   trailingPct: number;
   hardStopPct: number;
-  momentumThreshold: number;
+
+  // Pipeline
+  topCandidatesCount: number;        // how many from each side go to deep analysis (default 10)
+  scanIntervalMs: number;            // snapshot frequency ms (default 5000)
+  priceHistoryHours: number;         // rolling price cache hours (default 2)
+  tradeScoreThreshold: number;       // min score to trade (default 80)
+  replacementThreshold: number;      // min opportunity score to replace (default 15)
+
+  // Trade score weights (must sum to 100)
+  weightMomentum: number;            // default 40
+  weightTrend: number;               // default 20
+  weightVolume: number;              // default 15
+  weightBreakout: number;            // default 15
+  weightCandle: number;              // default 10
+
+  // Momentum weights (must sum to 1)
+  mwt30s: number;
+  mwt1m: number;
+  mwt2m: number;
+  mwt5m: number;
+  mwt10m: number;
+  mwt15m: number;
+  mwt30m: number;
+
+  // False alarm filter
+  falseAlarmFailureThreshold: number;  // consecutive failures before cooldown (default 50)
+  falseAlarmBaseCooldown: number;      // base turns (default 100)
+  falseAlarmMultiplier: number;        // doubling factor (default 2)
+  falseAlarmMaxCooldown: number;       // cap (default 1600)
+
+  // Risk
   maxDailyDrawdownPct: number;
   maxExposurePct: number;
   cooldownEntries: number;
   cooldownWindowMin: number;
   cooldownDurationMin: number;
+
   paperTrading: boolean;
   tradingEnabled: boolean;
-  symbols: string[];
 }
 
 const DEFAULTS: BotConfiguration = {
-  maxActiveSymbols: 5,
+  maxActivePositions: 5,
   maxEntriesPerSymbol: 3,
   maxCapitalPerEntry: 1000,
   initialBalance: 10000,
@@ -30,7 +63,27 @@ const DEFAULTS: BotConfiguration = {
   activationPct: 2,
   trailingPct: 3,
   hardStopPct: 5,
-  momentumThreshold: 0.3,
+  topCandidatesCount: 10,
+  scanIntervalMs: 5000,
+  priceHistoryHours: 2,
+  tradeScoreThreshold: 80,
+  replacementThreshold: 15,
+  weightMomentum: 40,
+  weightTrend: 20,
+  weightVolume: 15,
+  weightBreakout: 15,
+  weightCandle: 10,
+  mwt30s: 0.05,
+  mwt1m: 0.10,
+  mwt2m: 0.15,
+  mwt5m: 0.20,
+  mwt10m: 0.20,
+  mwt15m: 0.15,
+  mwt30m: 0.15,
+  falseAlarmFailureThreshold: 50,
+  falseAlarmBaseCooldown: 100,
+  falseAlarmMultiplier: 2,
+  falseAlarmMaxCooldown: 1600,
   maxDailyDrawdownPct: 5,
   maxExposurePct: 80,
   cooldownEntries: 3,
@@ -38,7 +91,6 @@ const DEFAULTS: BotConfiguration = {
   cooldownDurationMin: 5,
   paperTrading: true,
   tradingEnabled: false,
-  symbols: ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT', 'ADAUSDT', 'AVAXUSDT', 'LINKUSDT', 'MATICUSDT'],
 };
 
 @Injectable()
@@ -58,38 +110,56 @@ export class BotConfigService implements OnModuleInit {
       const map: Record<string, string> = {};
       for (const r of records) map[r.key] = r.value;
 
+      const num = (k: string, d: number) => map[k] !== undefined ? parseFloat(map[k]) : d;
+      const bool = (k: string, d: boolean) => map[k] !== undefined ? map[k] === 'true' : d;
+
       this.config = {
-        maxActiveSymbols: map.maxActiveSymbols ? parseInt(map.maxActiveSymbols) : DEFAULTS.maxActiveSymbols,
-        maxEntriesPerSymbol: map.maxEntriesPerSymbol ? parseInt(map.maxEntriesPerSymbol) : DEFAULTS.maxEntriesPerSymbol,
-        maxCapitalPerEntry: map.maxCapitalPerEntry ? parseFloat(map.maxCapitalPerEntry) : DEFAULTS.maxCapitalPerEntry,
-        initialBalance: map.initialBalance ? parseFloat(map.initialBalance) : DEFAULTS.initialBalance,
-        leverage: map.leverage ? parseInt(map.leverage) : DEFAULTS.leverage,
-        activationPct: map.activationPct ? parseFloat(map.activationPct) : DEFAULTS.activationPct,
-        trailingPct: map.trailingPct ? parseFloat(map.trailingPct) : DEFAULTS.trailingPct,
-        hardStopPct: map.hardStopPct ? parseFloat(map.hardStopPct) : DEFAULTS.hardStopPct,
-        momentumThreshold: map.momentumThreshold ? parseFloat(map.momentumThreshold) : DEFAULTS.momentumThreshold,
-        maxDailyDrawdownPct: map.maxDailyDrawdownPct ? parseFloat(map.maxDailyDrawdownPct) : DEFAULTS.maxDailyDrawdownPct,
-        maxExposurePct: map.maxExposurePct ? parseFloat(map.maxExposurePct) : DEFAULTS.maxExposurePct,
-        cooldownEntries: map.cooldownEntries ? parseInt(map.cooldownEntries) : DEFAULTS.cooldownEntries,
-        cooldownWindowMin: map.cooldownWindowMin ? parseInt(map.cooldownWindowMin) : DEFAULTS.cooldownWindowMin,
-        cooldownDurationMin: map.cooldownDurationMin ? parseInt(map.cooldownDurationMin) : DEFAULTS.cooldownDurationMin,
-        paperTrading: map.paperTrading !== undefined ? map.paperTrading === 'true' : DEFAULTS.paperTrading,
-        tradingEnabled: map.tradingEnabled !== undefined ? map.tradingEnabled === 'true' : DEFAULTS.tradingEnabled,
-        symbols: map.symbols ? JSON.parse(map.symbols) : DEFAULTS.symbols,
+        maxActivePositions: num('maxActivePositions', DEFAULTS.maxActivePositions),
+        maxEntriesPerSymbol: num('maxEntriesPerSymbol', DEFAULTS.maxEntriesPerSymbol),
+        maxCapitalPerEntry: num('maxCapitalPerEntry', DEFAULTS.maxCapitalPerEntry),
+        initialBalance: num('initialBalance', DEFAULTS.initialBalance),
+        leverage: num('leverage', DEFAULTS.leverage),
+        activationPct: num('activationPct', DEFAULTS.activationPct),
+        trailingPct: num('trailingPct', DEFAULTS.trailingPct),
+        hardStopPct: num('hardStopPct', DEFAULTS.hardStopPct),
+        topCandidatesCount: num('topCandidatesCount', DEFAULTS.topCandidatesCount),
+        scanIntervalMs: num('scanIntervalMs', DEFAULTS.scanIntervalMs),
+        priceHistoryHours: num('priceHistoryHours', DEFAULTS.priceHistoryHours),
+        tradeScoreThreshold: num('tradeScoreThreshold', DEFAULTS.tradeScoreThreshold),
+        replacementThreshold: num('replacementThreshold', DEFAULTS.replacementThreshold),
+        weightMomentum: num('weightMomentum', DEFAULTS.weightMomentum),
+        weightTrend: num('weightTrend', DEFAULTS.weightTrend),
+        weightVolume: num('weightVolume', DEFAULTS.weightVolume),
+        weightBreakout: num('weightBreakout', DEFAULTS.weightBreakout),
+        weightCandle: num('weightCandle', DEFAULTS.weightCandle),
+        mwt30s: num('mwt30s', DEFAULTS.mwt30s),
+        mwt1m: num('mwt1m', DEFAULTS.mwt1m),
+        mwt2m: num('mwt2m', DEFAULTS.mwt2m),
+        mwt5m: num('mwt5m', DEFAULTS.mwt5m),
+        mwt10m: num('mwt10m', DEFAULTS.mwt10m),
+        mwt15m: num('mwt15m', DEFAULTS.mwt15m),
+        mwt30m: num('mwt30m', DEFAULTS.mwt30m),
+        falseAlarmFailureThreshold: num('falseAlarmFailureThreshold', DEFAULTS.falseAlarmFailureThreshold),
+        falseAlarmBaseCooldown: num('falseAlarmBaseCooldown', DEFAULTS.falseAlarmBaseCooldown),
+        falseAlarmMultiplier: num('falseAlarmMultiplier', DEFAULTS.falseAlarmMultiplier),
+        falseAlarmMaxCooldown: num('falseAlarmMaxCooldown', DEFAULTS.falseAlarmMaxCooldown),
+        maxDailyDrawdownPct: num('maxDailyDrawdownPct', DEFAULTS.maxDailyDrawdownPct),
+        maxExposurePct: num('maxExposurePct', DEFAULTS.maxExposurePct),
+        cooldownEntries: num('cooldownEntries', DEFAULTS.cooldownEntries),
+        cooldownWindowMin: num('cooldownWindowMin', DEFAULTS.cooldownWindowMin),
+        cooldownDurationMin: num('cooldownDurationMin', DEFAULTS.cooldownDurationMin),
+        paperTrading: bool('paperTrading', DEFAULTS.paperTrading),
+        tradingEnabled: bool('tradingEnabled', DEFAULTS.tradingEnabled),
       };
     } catch (err) {
-      this.logger.warn('Could not load config from DB, using defaults: ' + err.message);
+      this.logger.warn('Could not load config, using defaults: ' + err.message);
     }
   }
 
-  get(): BotConfiguration {
-    return { ...this.config };
-  }
+  get(): BotConfiguration { return { ...this.config }; }
 
   async update(partial: Partial<BotConfiguration>): Promise<BotConfiguration> {
     this.config = { ...this.config, ...partial };
-    
-    // Persist each changed key
     for (const [key, value] of Object.entries(partial)) {
       const strValue = typeof value === 'object' ? JSON.stringify(value) : String(value);
       await this.prisma.botConfig.upsert({

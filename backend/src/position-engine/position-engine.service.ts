@@ -1,454 +1,287 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { OnEvent } from '@nestjs/event-emitter';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PrismaService } from '../prisma/prisma.service';
-import { MarketDataService } from '../market-data/market-data.service';
+import { MarketScannerService } from '../market-scanner/market-scanner.service';
 import { RiskEngineService } from '../risk-engine/risk-engine.service';
 import { BotConfigService } from '../config/bot-config.service';
-import { SignalResult } from '../signal-engine/signal-engine.service';
-import { EventEmitter2 } from '@nestjs/event-emitter';
+import { TradeValidationResult } from '../trade-validator/trade-validator.service';
 
-const FEE_RATE = 0.0004; // 0.04% per side (Binance futures taker)
+const FEE_RATE = 0.0004;
 
 @Injectable()
 export class PositionEngineService implements OnModuleInit {
   private readonly logger = new Logger(PositionEngineService.name);
-  private balance: number = 10000;
-  private botRunning = false;
-  private botPaused = false;
+  private balance = 10000;
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly marketData: MarketDataService,
+    private readonly scanner: MarketScannerService,
     private readonly risk: RiskEngineService,
-    private readonly botConfig: BotConfigService,
+    private readonly config: BotConfigService,
     private readonly events: EventEmitter2,
   ) {}
 
   async onModuleInit() {
-    const config = this.botConfig.get();
-    this.balance = config.initialBalance;
+    const cfg = this.config.get();
+    this.balance = cfg.initialBalance;
     await this.recoverBalance();
   }
 
   private async recoverBalance() {
-    // Sum realized PnL from trade history
     const trades = await this.prisma.tradeHistory.findMany();
     const totalPnl = trades.reduce((s, t) => s + t.pnl - t.fees, 0);
-    const config = this.botConfig.get();
-    this.balance = config.initialBalance + totalPnl;
+    this.balance = this.config.get().initialBalance + totalPnl;
   }
 
-  startBot() {
-    this.botRunning = true;
-    this.botPaused = false;
-    this.logger.log('Bot started');
+  // ─── Portfolio Manager Events ─────────────────────────────────────────────
+
+  @OnEvent('portfolio.openPosition')
+  async onOpenPosition(candidate: TradeValidationResult) {
+    await this.tryOpen(candidate);
   }
 
-  stopBot() {
-    this.botRunning = false;
-    this.botPaused = false;
-    this.logger.log('Bot stopped');
+  @OnEvent('portfolio.replacePosition')
+  async onReplacePosition({ closePositionId, openCandidate }: { closePositionId: string; openCandidate: TradeValidationResult }) {
+    const pos = await this.getPosition(closePositionId);
+    if (pos) await this.closePosition(pos, undefined, 'REPLACED_BY_OPPORTUNITY');
+    await this.tryOpen(openCandidate);
   }
 
-  pauseBot() {
-    this.botPaused = true;
-    this.logger.log('Bot paused');
-  }
+  // ─── Position Opening ─────────────────────────────────────────────────────
 
-  resumeBot() {
-    this.botPaused = false;
-    this.logger.log('Bot resumed');
-  }
+  async tryOpen(candidate: TradeValidationResult) {
+    const cfg = this.config.get();
+    const { symbol, direction } = candidate;
+    const side = direction as 'LONG' | 'SHORT';
 
-  getBotStatus() {
-    return {
-      running: this.botRunning,
-      paused: this.botPaused,
-      balance: this.balance,
-    };
-  }
-
-  @OnEvent('signal.generated')
-  async onSignal(signal: SignalResult) {
-    if (!this.botRunning || this.botPaused) return;
-    const config = this.botConfig.get();
-    if (!config.tradingEnabled) return;
-
-    if (signal.direction === 'LONG' || signal.direction === 'SHORT') {
-      await this.tryOpenPosition(signal);
-    }
-  }
-
-  async tryOpenPosition(signal: SignalResult) {
-    const config = this.botConfig.get();
-    const symbol = signal.symbol;
-    const side = signal.direction as 'LONG' | 'SHORT';
-
-    // Risk checks
-    const riskCheck = await this.risk.checkRisk(symbol, side, config.maxCapitalPerEntry);
-    if (!riskCheck.allowed) {
-      this.logger.debug(`Risk check failed for ${symbol}: ${riskCheck.reason}`);
-      return;
-    }
+    const riskCheck = await this.risk.checkRisk(symbol, side, cfg.maxCapitalPerEntry);
+    if (!riskCheck.allowed) { this.logger.debug(`Risk denied ${symbol}: ${riskCheck.reason}`); return; }
 
     const cooldownCheck = await this.risk.checkCooldown(symbol);
-    if (!cooldownCheck.allowed) {
-      this.logger.debug(`Cooldown check failed for ${symbol}: ${cooldownCheck.reason}`);
-      return;
-    }
+    if (!cooldownCheck.allowed) { this.logger.debug(`Cooldown ${symbol}: ${cooldownCheck.reason}`); return; }
 
-    // Check if we have an existing position to pyramid
+    // Check for existing position to pyramid
     const existing = await this.prisma.position.findFirst({
-      where: {
-        symbol,
-        status: { in: ['OPEN_LONG', 'LONG_TRAILING', 'OPEN_SHORT', 'SHORT_TRAILING'] },
-        side,
-      },
+      where: { symbol, side, status: { in: ['OPEN_LONG','LONG_TRAILING','OPEN_SHORT','SHORT_TRAILING'] } },
     });
 
     if (existing) {
-      await this.addPyramidEntry(existing, signal);
+      await this.pyramid(existing, candidate);
     } else {
-      await this.openNewPosition(symbol, side, signal);
+      await this.openNew(symbol, side, candidate);
     }
 
     await this.risk.trackEntry(symbol);
+
+    // Mark signal as acted
+    try {
+      await this.prisma.signal.updateMany({
+        where: { symbol, direction: side, acted: false },
+        data: { acted: true },
+      });
+    } catch (_) {}
   }
 
-  private async openNewPosition(symbol: string, side: 'LONG' | 'SHORT', signal: SignalResult) {
-    const config = this.botConfig.get();
-    const price = this.marketData.getLastPrice(symbol);
-    if (price === 0) return;
+  private async openNew(symbol: string, side: 'LONG' | 'SHORT', candidate: TradeValidationResult) {
+    const cfg = this.config.get();
+    const price = this.scanner.getCurrentPrice(symbol);
+    if (!price) return;
 
-    const capital = Math.min(config.maxCapitalPerEntry, this.balance * 0.1);
-    const quantity = (capital * config.leverage) / price;
+    const capital = Math.min(cfg.maxCapitalPerEntry, this.balance * 0.1);
+    const quantity = (capital * cfg.leverage) / price;
     const fee = capital * FEE_RATE;
 
-    let hardStop: number;
-    let status: string;
-    let highestPrice: number | null = null;
-    let lowestPrice: number | null = null;
-
-    if (side === 'LONG') {
-      hardStop = price * (1 - config.hardStopPct / 100);
-      status = 'OPEN_LONG';
-      highestPrice = price;
-    } else {
-      hardStop = price * (1 + config.hardStopPct / 100);
-      status = 'OPEN_SHORT';
-      lowestPrice = price;
-    }
+    const hardStop = side === 'LONG'
+      ? price * (1 - cfg.hardStopPct / 100)
+      : price * (1 + cfg.hardStopPct / 100);
 
     this.balance -= fee;
 
     const position = await this.prisma.position.create({
       data: {
-        symbol,
-        side,
-        status,
+        symbol, side,
+        status: side === 'LONG' ? 'OPEN_LONG' : 'OPEN_SHORT',
         entryPrice: price,
         currentPrice: price,
         quantity,
-        leverage: config.leverage,
+        leverage: cfg.leverage,
         hardStop,
-        activationPct: config.activationPct,
-        trailingPct: config.trailingPct,
-        hardStopPct: config.hardStopPct,
+        activationPct: cfg.activationPct,
+        trailingPct: cfg.trailingPct,
+        hardStopPct: cfg.hardStopPct,
         avgEntryPrice: price,
-        highestPrice,
-        lowestPrice,
+        highestPrice: side === 'LONG' ? price : null,
+        lowestPrice: side === 'SHORT' ? price : null,
         fees: fee,
         entryCount: 1,
       },
     });
 
     await this.prisma.order.create({
-      data: {
-        positionId: position.id,
-        type: 'MARKET',
-        side: side === 'LONG' ? 'BUY' : 'SELL',
-        price,
-        quantity,
-        fee,
-      },
+      data: { positionId: position.id, type: 'MARKET', side: side === 'LONG' ? 'BUY' : 'SELL', price, quantity, fee },
     });
 
-    await this.createNotification('POSITION_OPENED', `${side} position opened`, `${symbol} ${side} @ $${price.toFixed(2)}`);
-    this.logger.log(`Opened ${side} position for ${symbol} @ ${price}`);
+    await this.notify('POSITION_OPENED', `${side} opened`, `${symbol} @ $${price.toFixed(4)} score=${candidate.tradeScore.toFixed(1)}`);
+    this.logger.log(`Opened ${side} ${symbol} @ ${price} (score ${candidate.tradeScore.toFixed(1)})`);
     this.events.emit('position.opened', position);
   }
 
-  private async addPyramidEntry(position: any, signal: SignalResult) {
-    const config = this.botConfig.get();
-    if (position.entryCount >= config.maxEntriesPerSymbol) return;
+  private async pyramid(position: any, candidate: TradeValidationResult) {
+    const cfg = this.config.get();
+    if (position.entryCount >= cfg.maxEntriesPerSymbol) return;
 
-    const price = this.marketData.getLastPrice(position.symbol);
-    if (price === 0) return;
+    const price = this.scanner.getCurrentPrice(position.symbol);
+    if (!price) return;
 
-    // Only pyramid if profitable
     const isLong = position.side === 'LONG';
     const isProfitable = isLong ? price > position.entryPrice : price < position.entryPrice;
     if (!isProfitable) return;
 
-    const capital = Math.min(config.maxCapitalPerEntry, this.balance * 0.1);
-    const newQty = (capital * config.leverage) / price;
+    const capital = Math.min(cfg.maxCapitalPerEntry, this.balance * 0.1);
+    const newQty = (capital * cfg.leverage) / price;
     const fee = capital * FEE_RATE;
     const totalQty = position.quantity + newQty;
-    const newAvgEntry = (position.avgEntryPrice * position.quantity + price * newQty) / totalQty;
+    const newAvgEntry = (Number(position.avgEntryPrice) * Number(position.quantity) + price * newQty) / totalQty;
 
     this.balance -= fee;
 
     await this.prisma.position.update({
       where: { id: position.id },
-      data: {
-        quantity: totalQty,
-        avgEntryPrice: newAvgEntry,
-        entryCount: { increment: 1 },
-        fees: { increment: fee },
-      },
+      data: { quantity: totalQty, avgEntryPrice: newAvgEntry, entryCount: { increment: 1 }, fees: { increment: fee } },
     });
 
     await this.prisma.order.create({
-      data: {
-        positionId: position.id,
-        type: 'MARKET',
-        side: isLong ? 'BUY' : 'SELL',
-        price,
-        quantity: newQty,
-        fee,
-      },
+      data: { positionId: position.id, type: 'MARKET', side: isLong ? 'BUY' : 'SELL', price, quantity: newQty, fee },
     });
 
     this.logger.log(`Pyramided ${position.symbol} ${position.side} @ ${price} (entry ${position.entryCount + 1})`);
   }
 
-  @Cron('*/5 * * * * *') // every 5 seconds
+  // ─── Position Update Loop ─────────────────────────────────────────────────
+
+  @Cron('*/3 * * * * *')
   async updatePositions() {
-    if (!this.botRunning) return;
-
     const openPositions = await this.prisma.position.findMany({
-      where: {
-        status: { in: ['OPEN_LONG', 'LONG_TRAILING', 'OPEN_SHORT', 'SHORT_TRAILING'] },
-      },
+      where: { status: { in: ['OPEN_LONG','LONG_TRAILING','OPEN_SHORT','SHORT_TRAILING'] } },
     });
-
-    for (const position of openPositions) {
-      await this.updatePosition(position);
-    }
+    for (const pos of openPositions) await this.updatePosition(pos);
   }
 
-  private async updatePosition(position: any) {
-    const price = this.marketData.getLastPrice(position.symbol);
-    if (price === 0) return;
+  private async updatePosition(pos: any) {
+    const price = this.scanner.getCurrentPrice(pos.symbol);
+    if (!price) return;
 
-    const config = this.botConfig.get();
-    const isLong = position.side === 'LONG';
+    const cfg = this.config.get();
+    const isLong = pos.side === 'LONG';
     let shouldClose = false;
     let exitReason = '';
-    let updates: any = { currentPrice: price };
+    const updates: any = { currentPrice: price };
 
     if (isLong) {
-      // Update highest price
-      const newHighest = Math.max(position.highestPrice || price, price);
+      const newHighest = Math.max(Number(pos.highestPrice ?? price), price);
       updates.highestPrice = newHighest;
+      updates.unrealizedPnl = (price - Number(pos.avgEntryPrice)) * Number(pos.quantity);
 
-      // Calculate unrealized PnL
-      const pnl = (price - position.avgEntryPrice) / position.avgEntryPrice * 100;
-      updates.unrealizedPnl = (price - position.avgEntryPrice) * position.quantity;
-
-      // Activate trailing
-      const activationPrice = position.entryPrice * (1 + position.activationPct / 100);
-      if (price >= activationPrice && position.status === 'OPEN_LONG') {
+      if (price >= Number(pos.entryPrice) * (1 + pos.activationPct / 100) && pos.status === 'OPEN_LONG') {
         updates.status = 'LONG_TRAILING';
-        this.logger.debug(`${position.symbol} trailing activated @ ${price}`);
       }
-
-      // Update trailing stop
-      if (position.status === 'LONG_TRAILING' || updates.status === 'LONG_TRAILING') {
-        const trailingStop = newHighest * (1 - position.trailingPct / 100);
-        updates.trailingStop = trailingStop;
-
-        if (price <= trailingStop) {
-          shouldClose = true;
-          exitReason = 'TRAILING_STOP';
-        }
+      if (pos.status === 'LONG_TRAILING' || updates.status === 'LONG_TRAILING') {
+        const ts = newHighest * (1 - pos.trailingPct / 100);
+        updates.trailingStop = ts;
+        if (price <= ts) { shouldClose = true; exitReason = 'TRAILING_STOP'; }
       }
-
-      // Hard stop
-      if (price <= position.hardStop) {
-        shouldClose = true;
-        exitReason = 'HARD_STOP';
-      }
+      if (price <= Number(pos.hardStop)) { shouldClose = true; exitReason = 'HARD_STOP'; }
     } else {
-      // SHORT
-      const newLowest = Math.min(position.lowestPrice || price, price);
+      const newLowest = Math.min(Number(pos.lowestPrice ?? price), price);
       updates.lowestPrice = newLowest;
-      updates.unrealizedPnl = (position.avgEntryPrice - price) * position.quantity;
+      updates.unrealizedPnl = (Number(pos.avgEntryPrice) - price) * Number(pos.quantity);
 
-      const activationPrice = position.entryPrice * (1 - position.activationPct / 100);
-      if (price <= activationPrice && position.status === 'OPEN_SHORT') {
+      if (price <= Number(pos.entryPrice) * (1 - pos.activationPct / 100) && pos.status === 'OPEN_SHORT') {
         updates.status = 'SHORT_TRAILING';
       }
-
-      if (position.status === 'SHORT_TRAILING' || updates.status === 'SHORT_TRAILING') {
-        const trailingStop = newLowest * (1 + position.trailingPct / 100);
-        updates.trailingStop = trailingStop;
-
-        if (price >= trailingStop) {
-          shouldClose = true;
-          exitReason = 'TRAILING_STOP';
-        }
+      if (pos.status === 'SHORT_TRAILING' || updates.status === 'SHORT_TRAILING') {
+        const ts = newLowest * (1 + pos.trailingPct / 100);
+        updates.trailingStop = ts;
+        if (price >= ts) { shouldClose = true; exitReason = 'TRAILING_STOP'; }
       }
-
-      if (price >= position.hardStop) {
-        shouldClose = true;
-        exitReason = 'HARD_STOP';
-      }
+      if (price >= Number(pos.hardStop)) { shouldClose = true; exitReason = 'HARD_STOP'; }
     }
 
     if (shouldClose) {
-      await this.closePosition(position, price, exitReason);
+      await this.closePosition(pos, price, exitReason);
     } else {
-      await this.prisma.position.update({
-        where: { id: position.id },
-        data: updates,
-      });
+      await this.prisma.position.update({ where: { id: pos.id }, data: updates });
     }
   }
 
-  async closePosition(position: any, price?: number, exitReason = 'MANUAL') {
-    const exitPrice = price || this.marketData.getLastPrice(position.symbol);
-    if (exitPrice === 0) return;
+  // ─── Close Position ───────────────────────────────────────────────────────
 
-    const isLong = position.side === 'LONG';
+  async closePosition(pos: any, price?: number, exitReason = 'MANUAL') {
+    const exitPrice = price ?? this.scanner.getCurrentPrice(pos.symbol);
+    if (!exitPrice) return;
+
+    const isLong = pos.side === 'LONG';
     const priceDiff = isLong
-      ? exitPrice - position.avgEntryPrice
-      : position.avgEntryPrice - exitPrice;
+      ? exitPrice - Number(pos.avgEntryPrice)
+      : Number(pos.avgEntryPrice) - exitPrice;
 
-    const pnl = priceDiff * position.quantity;
-    const pnlPct = (priceDiff / position.avgEntryPrice) * 100;
-    const exitFee = exitPrice * position.quantity * FEE_RATE;
+    const pnl = priceDiff * Number(pos.quantity);
+    const pnlPct = (priceDiff / Number(pos.avgEntryPrice)) * 100;
+    const exitFee = exitPrice * Number(pos.quantity) * FEE_RATE;
     const netPnl = pnl - exitFee;
 
     this.balance += netPnl;
     this.risk.updateDailyPnl(netPnl);
 
-    const duration = Math.floor((Date.now() - new Date(position.openedAt).getTime()) / 1000);
+    const duration = Math.floor((Date.now() - new Date(pos.openedAt).getTime()) / 1000);
 
     await this.prisma.position.update({
-      where: { id: position.id },
-      data: {
-        status: 'CLOSED',
-        exitPrice,
-        exitReason,
-        closedAt: new Date(),
-        currentPrice: exitPrice,
-        realizedPnl: pnl,
-        unrealizedPnl: 0,
-        fees: { increment: exitFee },
-      },
+      where: { id: pos.id },
+      data: { status: 'CLOSED', exitPrice, exitReason, closedAt: new Date(), currentPrice: exitPrice, realizedPnl: pnl, unrealizedPnl: 0, fees: { increment: exitFee } },
     });
 
     await this.prisma.tradeHistory.create({
-      data: {
-        symbol: position.symbol,
-        side: position.side,
-        entryPrice: position.avgEntryPrice,
-        exitPrice,
-        quantity: position.quantity,
-        pnl,
-        pnlPct,
-        fees: (position.fees || 0) + exitFee,
-        duration,
-        exitReason,
-        entryTime: position.openedAt,
-        exitTime: new Date(),
-      },
+      data: { symbol: pos.symbol, side: pos.side, entryPrice: Number(pos.avgEntryPrice), exitPrice, quantity: Number(pos.quantity), pnl, pnlPct, fees: Number(pos.fees ?? 0) + exitFee, duration, exitReason, entryTime: pos.openedAt, exitTime: new Date() },
     });
 
-    // Update daily performance
     await this.updateDailyStats(pnl, exitFee, pnl > 0);
-
-    await this.createNotification(
-      'POSITION_CLOSED',
-      `${position.side} position closed`,
-      `${position.symbol} ${exitReason} PnL: $${netPnl.toFixed(2)}`,
-    );
-
-    this.logger.log(`Closed ${position.symbol} ${position.side} @ ${exitPrice} PnL: ${netPnl.toFixed(2)} (${exitReason})`);
-    this.events.emit('position.closed', { position, pnl: netPnl });
+    await this.notify('POSITION_CLOSED', `${pos.side} closed`, `${pos.symbol} ${exitReason} PnL: $${netPnl.toFixed(2)}`);
+    this.logger.log(`Closed ${pos.symbol} ${pos.side} @ ${exitPrice} PnL: ${netPnl.toFixed(2)} (${exitReason})`);
+    this.events.emit('position.closed', { pos, pnl: netPnl });
   }
 
   async closeAllPositions() {
-    const openPositions = await this.prisma.position.findMany({
-      where: { status: { in: ['OPEN_LONG', 'LONG_TRAILING', 'OPEN_SHORT', 'SHORT_TRAILING'] } },
+    const open = await this.prisma.position.findMany({
+      where: { status: { in: ['OPEN_LONG','LONG_TRAILING','OPEN_SHORT','SHORT_TRAILING'] } },
     });
-    for (const pos of openPositions) {
-      await this.closePosition(pos, undefined, 'EMERGENCY_CLOSE');
-    }
+    for (const pos of open) await this.closePosition(pos, undefined, 'EMERGENCY_CLOSE');
   }
 
   private async updateDailyStats(pnl: number, fee: number, isWin: boolean) {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    
+    const today = new Date(); today.setHours(0, 0, 0, 0);
     try {
       await this.prisma.performanceStat.upsert({
         where: { date: today },
-        update: {
-          dailyPnl: { increment: pnl },
-          totalTrades: { increment: 1 },
-          winningTrades: isWin ? { increment: 1 } : undefined,
-          losingTrades: !isWin ? { increment: 1 } : undefined,
-          totalFees: { increment: fee },
-          equity: this.balance,
-        },
-        create: {
-          date: today,
-          dailyPnl: pnl,
-          totalTrades: 1,
-          winningTrades: isWin ? 1 : 0,
-          losingTrades: isWin ? 0 : 1,
-          totalFees: fee,
-          equity: this.balance,
-        },
+        update: { dailyPnl: { increment: pnl }, totalTrades: { increment: 1 }, winningTrades: isWin ? { increment: 1 } : undefined, losingTrades: !isWin ? { increment: 1 } : undefined, totalFees: { increment: fee }, equity: this.balance },
+        create: { date: today, dailyPnl: pnl, totalTrades: 1, winningTrades: isWin ? 1 : 0, losingTrades: isWin ? 0 : 1, totalFees: fee, equity: this.balance },
       });
-    } catch (err) {
-      this.logger.error('Failed to update daily stats: ' + err.message);
-    }
+    } catch (_) {}
   }
 
-  getBalance() {
-    return this.balance;
+  private async notify(type: string, title: string, message: string) {
+    try { await this.prisma.notification.create({ data: { type, title, message } }); } catch (_) {}
   }
 
+  getBalance() { return this.balance; }
   async getOpenPositions() {
-    return this.prisma.position.findMany({
-      where: { status: { in: ['OPEN_LONG', 'LONG_TRAILING', 'OPEN_SHORT', 'SHORT_TRAILING'] } },
-      orderBy: { openedAt: 'desc' },
-    });
+    return this.prisma.position.findMany({ where: { status: { in: ['OPEN_LONG','LONG_TRAILING','OPEN_SHORT','SHORT_TRAILING'] } }, orderBy: { openedAt: 'desc' } });
   }
-
   async getAllPositions(limit = 100) {
-    return this.prisma.position.findMany({
-      orderBy: { openedAt: 'desc' },
-      take: limit,
-    });
+    return this.prisma.position.findMany({ orderBy: { openedAt: 'desc' }, take: limit });
   }
-
   async getPosition(id: string) {
-    return this.prisma.position.findUnique({
-      where: { id: BigInt(id) },
-      include: { orders: true },
-    });
-  }
-
-  private async createNotification(type: string, title: string, message: string) {
-    try {
-      await this.prisma.notification.create({ data: { type, title, message } });
-    } catch (err) {
-      // ignore
-    }
+    return this.prisma.position.findUnique({ where: { id: BigInt(id) }, include: { orders: true } });
   }
 }

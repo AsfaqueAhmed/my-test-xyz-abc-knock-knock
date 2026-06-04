@@ -1,11 +1,10 @@
 import { Module } from '@nestjs/common';
 import { PositionEngineService } from './position-engine.service';
-import { MarketDataModule } from '../market-data/market-data.module';
+import { MarketScannerModule } from '../market-scanner/market-scanner.module';
 import { RiskEngineModule } from '../risk-engine/risk-engine.module';
 import { BotConfigModule } from '../config/bot-config.module';
-
 @Module({
-  imports: [MarketDataModule, RiskEngineModule, BotConfigModule],
+  imports: [MarketScannerModule, RiskEngineModule, BotConfigModule],
   providers: [PositionEngineService],
   exports: [PositionEngineService],
 })
