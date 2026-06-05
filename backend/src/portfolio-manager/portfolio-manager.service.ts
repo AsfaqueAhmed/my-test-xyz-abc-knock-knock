@@ -245,7 +245,7 @@ export class PortfolioManagerService implements OnModuleInit {
       const slotsAvailable = openCount < cfg.maxActivePositions;
       const balance = this.positionEngine.getBalance();
       const effectiveCapital = Math.min(cfg.maxCapitalPerEntry, balance * 0.1);
-      const hasSufficientBalance = effectiveCapital >= 10;
+      const hasSufficientBalance = effectiveCapital > 0;
 
       if (slotsAvailable && hasSufficientBalance) {
         // Free slot with enough capital — open directly, no replacement needed

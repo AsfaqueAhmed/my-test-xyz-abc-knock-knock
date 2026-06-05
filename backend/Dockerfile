@@ -5,6 +5,7 @@ RUN npm ci --only=production
 
 FROM node:20-alpine AS builder
 WORKDIR /app
+ENV NODE_OPTIONS="--max-old-space-size=512"
 COPY package*.json ./
 RUN npm ci
 COPY prisma ./prisma/
