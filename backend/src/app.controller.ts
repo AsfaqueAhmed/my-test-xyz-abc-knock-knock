@@ -241,6 +241,38 @@ export class AppController {
     return this.scanner.getPriceHistory(sym);
   }
 
+  // ─── Manual Trading ───────────────────────────────────────────────────────
+
+  @Get('trades/manual/check/:symbol')
+  async checkManualTrade(
+    @Param('symbol') symbol: string,
+    @Query('direction') direction: string = 'LONG',
+  ) {
+    const dir = direction.toUpperCase() as 'LONG' | 'SHORT';
+    if (!['LONG', 'SHORT'].includes(dir))
+      throw new HttpException('direction must be LONG or SHORT', HttpStatus.BAD_REQUEST);
+    try {
+      return await this.positions.checkManual(symbol.toUpperCase(), dir);
+    } catch (err) {
+      throw new HttpException(err.message, HttpStatus.BAD_REQUEST);
+    }
+  }
+
+  @Post('trades/manual')
+  async manualTrade(@Body() body: { symbol: string; direction: 'LONG' | 'SHORT'; amount?: number }) {
+    const { symbol, direction, amount } = body;
+    if (!symbol || !direction)
+      throw new HttpException('symbol and direction are required', HttpStatus.BAD_REQUEST);
+    const dir = direction.toUpperCase() as 'LONG' | 'SHORT';
+    if (!['LONG', 'SHORT'].includes(dir))
+      throw new HttpException('direction must be LONG or SHORT', HttpStatus.BAD_REQUEST);
+    try {
+      return await this.positions.manualOpen(symbol.toUpperCase(), dir, amount);
+    } catch (err) {
+      throw new HttpException(err.message, HttpStatus.BAD_REQUEST);
+    }
+  }
+
   @Get('market/tokens')
   @Get('market/token-list')
   getMarketTokens() {

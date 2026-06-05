@@ -110,6 +110,35 @@ export interface BotLog {
   metadata: Record<string, unknown> | null;
 }
 
+export interface ManualTradeCheck {
+  symbol: string;
+  direction: 'LONG' | 'SHORT';
+  price: number;
+  maxSafePositionSize: number;
+  effectiveMax: number;
+  reasons: string[];
+}
+
+export interface ManualTradeResult {
+  success: boolean;
+  symbol: string;
+  side: string;
+  price: number;
+  capital: number;
+  maxSafePositionSize: number;
+  quantity: number;
+}
+
+export async function checkManualTrade(symbol: string, direction: 'LONG' | 'SHORT'): Promise<ManualTradeCheck> {
+  const { data } = await api.get(`/trades/manual/check/${symbol}`, { params: { direction } });
+  return data;
+}
+
+export async function manualTrade(symbol: string, direction: 'LONG' | 'SHORT', amount?: number): Promise<ManualTradeResult> {
+  const { data } = await api.post('/trades/manual', { symbol, direction, amount });
+  return data;
+}
+
 export async function botStart() { return api.post('/bot/start'); }
 export async function botStop() { return api.post('/bot/stop'); }
 export async function botPause() { return api.post('/bot/pause'); }

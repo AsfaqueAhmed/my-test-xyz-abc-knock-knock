@@ -7,6 +7,7 @@ import { MarketScannerService } from '../market-scanner/market-scanner.service';
 import { MomentumRankerService, RankedCandidate } from '../momentum-ranker/momentum-ranker.service';
 import { DeepAnalysisService } from '../deep-analysis/deep-analysis.service';
 import { TradeValidatorService, TradeValidationResult } from '../trade-validator/trade-validator.service';
+import { PositionEngineService } from '../position-engine/position-engine.service';
 
 export interface PositionStrengthScore {
   positionId: string;
@@ -21,6 +22,7 @@ export interface PositionStrengthScore {
   inTrailingMode: boolean;
   makingNewExtremes: boolean;
   protected: boolean;      // cannot be replaced
+  openedAt: Date;
 }
 
 @Injectable()
@@ -44,6 +46,7 @@ export class PortfolioManagerService implements OnModuleInit {
     private readonly ranker: MomentumRankerService,
     private readonly deepAnalysis: DeepAnalysisService,
     private readonly validator: TradeValidatorService,
+    private readonly positionEngine: PositionEngineService,
     private readonly events: EventEmitter2,
   ) {}
 
@@ -224,6 +227,7 @@ export class PortfolioManagerService implements OnModuleInit {
       inTrailingMode: inTrailing,
       makingNewExtremes,
       protected: protected_,
+      openedAt: pos.openedAt,
     };
   }
 
@@ -238,13 +242,21 @@ export class PortfolioManagerService implements OnModuleInit {
         where: { status: { in: ['OPEN_LONG', 'LONG_TRAILING', 'OPEN_SHORT', 'SHORT_TRAILING'] } },
       });
 
-      if (openCount < cfg.maxActivePositions) {
-        // Free slot — open directly
+      const slotsAvailable = openCount < cfg.maxActivePositions;
+      const balance = this.positionEngine.getBalance();
+      const effectiveCapital = Math.min(cfg.maxCapitalPerEntry, balance * 0.1);
+      const hasSufficientBalance = effectiveCapital >= 10;
+
+      if (slotsAvailable && hasSufficientBalance) {
+        // Free slot with enough capital — open directly, no replacement needed
         this.events.emit('portfolio.openPosition', candidate);
         continue;
       }
 
-      // No free slot — evaluate opportunity cost
+      const reason = !slotsAvailable ? 'max positions filled' : `insufficient balance ($${balance.toFixed(2)})`;
+      this.logger.debug(`Evaluating replacement for ${candidate.symbol} — ${reason}`);
+
+      // Slot full or balance too low — evaluate opportunity cost
       const weakest = this.findWeakestReplaceablePosition();
       if (!weakest) {
         this.logger.debug(`No capital for ${candidate.symbol} — all positions protected`);
@@ -268,6 +280,9 @@ export class PortfolioManagerService implements OnModuleInit {
           `with ${candidate.symbol} (score ${candidateScore.toFixed(1)}, ` +
           `opportunity +${opportunityScore.toFixed(1)})`
         );
+        // Remove from scores immediately so subsequent candidates in this turn
+        // cannot select the same position for replacement again.
+        this.positionScores.delete(weakest.positionId);
         this.events.emit('position.replaced', {
           closedSymbol: weakest.symbol,
           closedScore: weakest.score,
@@ -284,8 +299,10 @@ export class PortfolioManagerService implements OnModuleInit {
   }
 
   private findWeakestReplaceablePosition(): PositionStrengthScore | null {
+    const MIN_AGE_MS = 5 * 60 * 1000;
+    const now = Date.now();
     const scores = Array.from(this.positionScores.values())
-      .filter(s => !s.protected)
+      .filter(s => !s.protected && (now - s.openedAt.getTime()) >= MIN_AGE_MS)
       .sort((a, b) => a.score - b.score);
     return scores[0] ?? null;
   }

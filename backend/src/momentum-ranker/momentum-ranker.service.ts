@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { MarketScannerService } from '../market-scanner/market-scanner.service';
@@ -33,8 +33,6 @@ export interface FalseAlarmRecord {
 
 @Injectable()
 export class MomentumRankerService {
-  private readonly logger = new Logger(MomentumRankerService.name);
-
   private topBullish: RankedCandidate[] = [];
   private topBearish: RankedCandidate[] = [];
   private lastScores: Map<string, MomentumScore> = new Map();
@@ -174,11 +172,6 @@ export class MomentumRankerService {
 
       // Check if in active cooldown
       if (fa.cooldownEndsAtTurn > turn) {
-        const remaining = fa.cooldownEndsAtTurn - turn;
-        // Skip this symbol — use next in ranking
-        this.logger.debug(
-          `${s.symbol} in false alarm cooldown (${remaining} turns left, offense #${fa.offenseCount})`
-        );
         continue;
       }
 
@@ -202,25 +195,15 @@ export class MomentumRankerService {
     fa.lastUpdatedTurn = turn;
     if (reason) fa.lastFailureReason = reason;
 
-    this.logger.debug(
-      `${symbol} consecutive failures: ${fa.consecutiveFailures}/${cfg.falseAlarmFailureThreshold}`
-    );
-
     if (fa.consecutiveFailures >= cfg.falseAlarmFailureThreshold) {
       fa.offenseCount++;
       fa.consecutiveFailures = 0;
 
-      // Dynamic cooldown: base × multiplier^(offenseCount-1), capped at max
       const cooldown = Math.min(
         cfg.falseAlarmBaseCooldown * Math.pow(cfg.falseAlarmMultiplier, fa.offenseCount - 1),
         cfg.falseAlarmMaxCooldown,
       );
       fa.cooldownEndsAtTurn = turn + cooldown;
-
-      this.logger.warn(
-        `${symbol} → false alarm #${fa.offenseCount}. ` +
-        `Cooldown: ${cooldown} turns (ends turn ${fa.cooldownEndsAtTurn})`
-      );
 
       this.events.emit('falseAlarm.triggered', {
         symbol,
@@ -257,9 +240,7 @@ export class MomentumRankerService {
     const inTop = new Set([...bullishSymbols, ...bearishSymbols]);
     for (const [symbol, fa] of this.falseAlarms) {
       if (!inTop.has(symbol) && fa.consecutiveFailures > 0) {
-        this.logger.debug(
-          `${symbol} left top list with ${fa.consecutiveFailures} pending failures (not reset)`,
-        );
+        // symbol left top list with pending failures — not reset intentionally
       }
     }
   }

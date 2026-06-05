@@ -17,6 +17,7 @@ export interface TradeValidationResult {
   quoteVolume24h: number;
   openInterest: number;
   openInterestNotional: number;
+  maxSafePositionSize: number;
   passed: boolean;
   failureReason?: string;      // primary reason when !passed
   reasons: string[];
@@ -63,16 +64,16 @@ export class TradeValidatorService {
     if (!passed) {
       if (tradeScore < cfg.tradeScoreThreshold) {
         failureReason = `Trade score ${tradeScore.toFixed(1)} < threshold ${cfg.tradeScoreThreshold}`;
-      } else if (analysis.trendScore < 100) {
-        failureReason = `Trend score ${analysis.trendScore} < 100`;
-      } else if (analysis.volumeRatio < 1.5) {
-        failureReason = `Volume ratio ${analysis.volumeRatio.toFixed(2)} < 1.5`;
+      } else if (analysis.volumeRatio < 1.3) {
+        failureReason = `Volume ratio ${analysis.volumeRatio.toFixed(2)} < 1.3`;
       } else if (!analysis.breakoutConfirmed) {
         failureReason = 'Breakout not confirmed';
       } else if (analysis.atrPct > 5) {
         failureReason = `ATR% ${analysis.atrPct.toFixed(2)} > 5`;
+      } else if (analysis.rangeExpansion > cfg.maxRangeExpansionRatio) {
+        failureReason = `Range expansion ${analysis.rangeExpansion.toFixed(2)}x > ${cfg.maxRangeExpansionRatio}x`;
       } else if (!analysis.liquidityPassed) {
-        failureReason = `Low liquidity volume=$${analysis.quoteVolume24h.toFixed(0)}`;
+        failureReason = `Liquidity too thin — max safe size $${analysis.maxSafePositionSize.toFixed(0)}`;
       } else {
         failureReason = 'Deep analysis failed';
       }
@@ -92,6 +93,7 @@ export class TradeValidatorService {
       quoteVolume24h: analysis.quoteVolume24h,
       openInterest: analysis.openInterest,
       openInterestNotional: analysis.openInterestNotional,
+      maxSafePositionSize: analysis.maxSafePositionSize,
       passed,
       failureReason,
       reasons,

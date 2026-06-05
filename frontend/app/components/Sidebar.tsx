@@ -18,7 +18,7 @@ const navItems = [
   { href: '/system-health', label: 'System', icon: '◎' },
 ];
 
-export function Sidebar() {
+export function Sidebar({ onClose, isMobile }: { onClose?: () => void; isMobile?: boolean }) {
   const pathname = usePathname();
   const { data } = useQuery({ queryKey: ['dashboard'], queryFn: fetchDashboard, refetchInterval: 5000 });
 
@@ -45,11 +45,22 @@ export function Sidebar() {
       overflowY: 'auto',
     }}>
       {/* Logo */}
-      <div style={{ padding: '20px 20px 16px', borderBottom: '1px solid var(--border)' }}>
-        <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)', letterSpacing: '0.05em' }}>
-          ◈ MOMENTUM
+      <div style={{ padding: '20px 20px 16px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div>
+          <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)', letterSpacing: '0.05em' }}>
+            ◈ MOMENTUM
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 2 }}>FUTURES BOT</div>
         </div>
-        <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 2 }}>FUTURES BOT</div>
+        {isMobile && (
+          <button
+            onClick={onClose}
+            aria-label="Close menu"
+            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text3)', fontSize: 20, lineHeight: 1, padding: 4 }}
+          >
+            ×
+          </button>
+        )}
       </div>
 
       {/* Bot Status */}
@@ -76,7 +87,7 @@ export function Sidebar() {
         {navItems.map(({ href, label, icon }) => {
           const active = pathname === href;
           return (
-            <Link key={href} href={href} style={{
+            <Link key={href} href={href} onClick={isMobile ? onClose : undefined} style={{
               display: 'flex',
               alignItems: 'center',
               gap: 10,

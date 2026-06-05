@@ -25,6 +25,7 @@ export interface DeepAnalysisResult {
   openInterest: number;
   openInterestNotional: number;
   liquidityPassed: boolean;
+  maxSafePositionSize: number;  // max $ position size based on liquidity
   ema20: number; ema50: number; ema200: number;
   reasons: string[];
   passed: boolean;          // passed all minimum thresholds
@@ -159,9 +160,12 @@ export class DeepAnalysisService {
     const ticker = this.scanner.getTicker(symbol);
     const quoteVolume24h = ticker?.volume24h ?? 0;
     const oi = await this.fetchOpenInterest(symbol, currentPrice);
-    const liquidityPassed =
-      quoteVolume24h >= cfg.minQuoteVolume24h &&
-      oi.notional >= cfg.minOpenInterestNotional;
+    // Dynamic position sizing: safe to trade up to 0.1% of 24h volume or 1% of OI notional
+    const maxSafePositionSize = Math.min(
+      quoteVolume24h * 0.001,
+      oi.notional > 0 ? oi.notional * 0.01 : quoteVolume24h * 0.001,
+    );
+    const liquidityPassed = maxSafePositionSize >= cfg.minPositionSize;
     const liquidityScore = Math.min(
       100,
       Math.min(quoteVolume24h / cfg.minQuoteVolume24h, 1) * 50 +
@@ -169,15 +173,14 @@ export class DeepAnalysisService {
     );
 
     if (liquidityPassed) {
-      reasons.push(`Liquidity confirmed volume=$${quoteVolume24h.toFixed(0)} OI=$${oi.notional.toFixed(0)}`);
+      reasons.push(`Liquidity OK — max safe size $${maxSafePositionSize.toFixed(0)} (vol=$${quoteVolume24h.toFixed(0)} OI=$${oi.notional.toFixed(0)})`);
     } else {
-      reasons.push(`Low liquidity volume=$${quoteVolume24h.toFixed(0)} OI=$${oi.notional.toFixed(0)}`);
+      reasons.push(`Liquidity too thin — max safe size $${maxSafePositionSize.toFixed(0)} < min $${cfg.minPositionSize}`);
     }
 
     // ── Minimum pass thresholds ─────────────────────────────────────────────
     const passed =
-      trendScore >= 100 &&
-      volumeRatio >= 1.5 &&
+      volumeRatio >= 1.3 &&
       breakoutConfirmed &&
       atrPct <= 5 &&
       rangeExpansion <= cfg.maxRangeExpansionRatio &&
@@ -192,6 +195,7 @@ export class DeepAnalysisService {
       openInterest: oi.openInterest,
       openInterestNotional: oi.notional,
       liquidityPassed,
+      maxSafePositionSize,
       ema20, ema50, ema200,
       reasons, passed,
     };

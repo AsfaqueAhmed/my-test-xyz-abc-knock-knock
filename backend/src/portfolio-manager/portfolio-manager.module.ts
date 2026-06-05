@@ -6,8 +6,9 @@ import { DeepAnalysisModule } from '../deep-analysis/deep-analysis.module';
 import { TradeValidatorModule } from '../trade-validator/trade-validator.module';
 import { BotConfigModule } from '../config/bot-config.module';
 import { RiskEngineModule } from '../risk-engine/risk-engine.module';
+import { PositionEngineModule } from '../position-engine/position-engine.module';
 @Module({
-  imports: [MarketScannerModule, MomentumRankerModule, DeepAnalysisModule, TradeValidatorModule, BotConfigModule, RiskEngineModule],
+  imports: [MarketScannerModule, MomentumRankerModule, DeepAnalysisModule, TradeValidatorModule, BotConfigModule, RiskEngineModule, PositionEngineModule],
   providers: [PortfolioManagerService],
   exports: [PortfolioManagerService],
 })

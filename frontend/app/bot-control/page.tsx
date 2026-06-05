@@ -77,7 +77,7 @@ export default function BotControlPage() {
         </div>
       )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 24 }}>
+      <div className="grid-2col" style={{ marginBottom: 24 }}>
         {/* Status */}
         <div className="card">
           <div style={{ fontSize: 12, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 14 }}>Current Status</div>
@@ -137,7 +137,7 @@ export default function BotControlPage() {
       {/* Danger zone */}
       <div className="card" style={{ border: '1px solid rgba(255,71,87,0.2)', marginBottom: 24 }}>
         <div style={{ fontSize: 12, color: 'var(--red)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 14 }}>Danger Zone</div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <div className="grid-2col" style={{ gap: 12 }}>
           {/* Close All */}
           <div style={{ background: 'var(--bg3)', borderRadius: 8, padding: 16 }}>
             <div style={{ fontWeight: 600, marginBottom: 6 }}>Close All Positions</div>

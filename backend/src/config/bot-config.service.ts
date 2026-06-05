@@ -21,8 +21,9 @@ export interface BotConfiguration {
   tradeScoreThreshold: number;       // min score to trade (default 80)
   replacementThreshold: number;      // min opportunity score to replace (default 15)
   maxRangeExpansionRatio: number;    // reject candles expanded far beyond recent range
-  minQuoteVolume24h: number;         // minimum 24h quote volume for candidate liquidity
-  minOpenInterestNotional: number;   // minimum open interest notional for candidate liquidity
+  minQuoteVolume24h: number;         // used for liquidity score normalisation
+  minOpenInterestNotional: number;   // used for liquidity score normalisation
+  minPositionSize: number;           // min safe position size in $ to allow a trade (default 50)
 
   // Trade score weights (must sum to 100)
   weightMomentum: number;            // default 40
@@ -76,6 +77,7 @@ const DEFAULTS: BotConfiguration = {
   maxRangeExpansionRatio: 3,
   minQuoteVolume24h: 10_000_000,
   minOpenInterestNotional: 5_000_000,
+  minPositionSize: 50,
   weightMomentum: 40,
   weightTrend: 20,
   weightVolume: 15,
@@ -140,6 +142,7 @@ export class BotConfigService implements OnModuleInit {
         maxRangeExpansionRatio: num('maxRangeExpansionRatio', DEFAULTS.maxRangeExpansionRatio),
         minQuoteVolume24h: num('minQuoteVolume24h', DEFAULTS.minQuoteVolume24h),
         minOpenInterestNotional: num('minOpenInterestNotional', DEFAULTS.minOpenInterestNotional),
+        minPositionSize: num('minPositionSize', DEFAULTS.minPositionSize),
         weightMomentum: num('weightMomentum', DEFAULTS.weightMomentum),
         weightTrend: num('weightTrend', DEFAULTS.weightTrend),
         weightVolume: num('weightVolume', DEFAULTS.weightVolume),

@@ -77,12 +77,12 @@ export default function ConfigPage() {
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
+      <div className="page-header">
         <div>
           <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>Configuration</h1>
           <p style={{ fontSize: 12, color: 'var(--text3)' }}>Bot trading parameters — changes apply immediately</p>
         </div>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <div className="page-header-actions" style={{ alignItems: 'center' }}>
           {saved && <span style={{ color: 'var(--green)', fontSize: 13 }}>✓ Saved</span>}
           <button className="btn btn-primary" onClick={handleSubmit} disabled={mutation.isPending}>
             {mutation.isPending ? 'Saving…' : '💾 Save Config'}

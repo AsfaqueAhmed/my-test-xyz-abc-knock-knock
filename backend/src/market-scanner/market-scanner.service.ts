@@ -39,6 +39,7 @@ export class MarketScannerService implements OnModuleInit, OnModuleDestroy {
   async onModuleInit() {
     await this.fetchAllSymbols();
     await this.fetchAndSnapshot();
+    await this.warmUpPriceHistory();
     this.startScanTimer();
     this.startCleanupTimer();
   }
@@ -108,6 +109,53 @@ export class MarketScannerService implements OnModuleInit, OnModuleDestroy {
     }
 
     this.logger.log(`Active USDT perpetuals: ${this.allSymbols.length}`);
+  }
+
+  // ─── Price History Warm-up ────────────────────────────────────────────────
+
+  private async warmUpPriceHistory() {
+    const symbols = this.allSymbols;
+    if (symbols.length === 0) return;
+
+    this.logger.log(`Warming up price history for ${symbols.length} symbols...`);
+    const BATCH = 20;
+    let seeded = 0;
+
+    for (let i = 0; i < symbols.length; i += BATCH) {
+      const batch = symbols.slice(i, i + BATCH);
+      await Promise.all(batch.map(async (symbol) => {
+        try {
+          const https = require('https');
+          const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=1m&limit=31`;
+          const raw = await new Promise<string>((resolve, reject) => {
+            https.get(url, (res: any) => {
+              let d = ''; res.on('data', (c: any) => d += c); res.on('end', () => resolve(d));
+            }).on('error', reject);
+          });
+          const klines = JSON.parse(raw);
+          if (!Array.isArray(klines)) return;
+
+          const snapshots: PriceSnapshot[] = klines.map((k: any) => ({
+            timestamp: k[0],          // kline open time
+            price: parseFloat(k[4]),  // close price
+          }));
+
+          const existing = this.priceHistory.get(symbol) ?? [];
+          const existingTs = new Set(existing.map(s => s.timestamp));
+          const merged = [
+            ...snapshots.filter(s => !existingTs.has(s.timestamp)),
+            ...existing,
+          ].sort((a, b) => a.timestamp - b.timestamp);
+
+          this.priceHistory.set(symbol, merged);
+          seeded++;
+        } catch (err) {
+          this.logger.warn(`Warm-up failed for ${symbol}: ${err.message}`);
+        }
+      }));
+    }
+
+    this.logger.log(`Price history warm-up complete: ${seeded}/${symbols.length} symbols seeded`);
   }
 
   // ─── Scan Timer (fetch + snapshot) ───────────────────────────────────────

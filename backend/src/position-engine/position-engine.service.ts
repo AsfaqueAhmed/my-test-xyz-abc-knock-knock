@@ -6,6 +6,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { MarketScannerService } from '../market-scanner/market-scanner.service';
 import { RiskEngineService } from '../risk-engine/risk-engine.service';
 import { BotConfigService } from '../config/bot-config.service';
+import { DeepAnalysisService } from '../deep-analysis/deep-analysis.service';
 import { TradeValidationResult } from '../trade-validator/trade-validator.service';
 
 const FEE_RATE = 0.0004;
@@ -20,6 +21,7 @@ export class PositionEngineService implements OnModuleInit {
     private readonly scanner: MarketScannerService,
     private readonly risk: RiskEngineService,
     private readonly config: BotConfigService,
+    private readonly deepAnalysis: DeepAnalysisService,
     private readonly events: EventEmitter2,
   ) {}
 
@@ -44,14 +46,22 @@ export class PositionEngineService implements OnModuleInit {
 
   @OnEvent('portfolio.replacePosition')
   async onReplacePosition({ closePositionId, openCandidate }: { closePositionId: string; openCandidate: TradeValidationResult }) {
+    // Open the new position FIRST — the slot isn't free yet so we must bypass the position limit.
+    // Only close the old position if the open actually succeeds; otherwise leave it untouched.
+    const opened = await this.tryOpen(openCandidate, { ignorePositionLimit: true });
+    if (!opened) {
+      this.logger.warn(
+        `Replacement open failed for ${openCandidate.symbol} — keeping existing position ${closePositionId}`
+      );
+      return;
+    }
     const pos = await this.getPosition(closePositionId);
     if (pos) await this.closePosition(pos, undefined, 'REPLACED_BY_OPPORTUNITY');
-    await this.tryOpen(openCandidate);
   }
 
   // ─── Position Opening ─────────────────────────────────────────────────────
 
-  async tryOpen(candidate: TradeValidationResult): Promise<boolean> {
+  async tryOpen(candidate: TradeValidationResult, opts: { ignorePositionLimit?: boolean } = {}): Promise<boolean> {
     const cfg = this.config.get();
     const { symbol, direction } = candidate;
     const side = direction as 'LONG' | 'SHORT';
@@ -62,7 +72,7 @@ export class PositionEngineService implements OnModuleInit {
     });
 
     const riskCheck = await this.risk.checkRisk(symbol, side, cfg.maxCapitalPerEntry, {
-      ignorePositionLimit: !!existing,
+      ignorePositionLimit: !!existing || !!opts.ignorePositionLimit,
     });
     if (!riskCheck.allowed) { this.logger.debug(`Risk denied ${symbol}: ${riskCheck.reason}`); return false; }
 
@@ -99,7 +109,7 @@ export class PositionEngineService implements OnModuleInit {
       return false;
     }
 
-    const capital = Math.min(cfg.maxCapitalPerEntry, this.balance * 0.1);
+    const capital = Math.min(cfg.maxCapitalPerEntry, this.balance * 0.1, candidate.maxSafePositionSize);
     const quantity = (capital * cfg.leverage) / price;
     const fee = capital * FEE_RATE;
 
@@ -158,7 +168,7 @@ export class PositionEngineService implements OnModuleInit {
     const scoreImproving = candidate.tradeScore >= cfg.tradeScoreThreshold;
     if (!momentumStrong || !breakoutConfirmed || !scoreImproving) return false;
 
-    const capital = Math.min(cfg.maxCapitalPerEntry, this.balance * 0.1);
+    const capital = Math.min(cfg.maxCapitalPerEntry, this.balance * 0.1, candidate.maxSafePositionSize);
     const newQty = (capital * cfg.leverage) / price;
     const fee = capital * FEE_RATE;
     const totalQty = position.quantity + newQty;
@@ -217,7 +227,8 @@ export class PositionEngineService implements OnModuleInit {
       if (pos.status === 'LONG_TRAILING' || updates.status === 'LONG_TRAILING') {
         const floor = Number(pos.avgEntryPrice) * (1 + pos.activationPct / 100);
         const trailing = newHighest * (1 - pos.trailingPct / 100);
-        const ts = Math.max(floor, trailing);
+        const candidate = Math.max(floor, trailing);
+        const ts = Math.max(candidate, Number(pos.trailingStop ?? 0));
         updates.trailingStop = ts;
         if (price <= ts) { shouldClose = true; exitReason = 'TRAILING_STOP'; }
       }
@@ -233,7 +244,8 @@ export class PositionEngineService implements OnModuleInit {
       if (pos.status === 'SHORT_TRAILING' || updates.status === 'SHORT_TRAILING') {
         const ceiling = Number(pos.avgEntryPrice) * (1 - pos.activationPct / 100);
         const trailing = newLowest * (1 + pos.trailingPct / 100);
-        const ts = Math.min(ceiling, trailing);
+        const candidate = Math.min(ceiling, trailing);
+        const ts = Math.min(candidate, Number(pos.trailingStop ?? Infinity));
         updates.trailingStop = ts;
         if (price >= ts) { shouldClose = true; exitReason = 'TRAILING_STOP'; }
       }
@@ -324,6 +336,80 @@ export class PositionEngineService implements OnModuleInit {
         },
       });
     } catch (_) {}
+  }
+
+  // ─── Manual Trading ───────────────────────────────────────────────────────
+
+  async checkManual(symbol: string, direction: 'LONG' | 'SHORT') {
+    const price = this.scanner.getCurrentPrice(symbol);
+    if (!price) throw new Error(`No price available for ${symbol}`);
+    const analysis = await this.deepAnalysis.analyse(symbol, direction);
+    const cfg = this.config.get();
+    const effectiveMax = Math.min(cfg.maxCapitalPerEntry, this.balance * 0.1, analysis.maxSafePositionSize);
+    return {
+      symbol,
+      direction,
+      price,
+      maxSafePositionSize: analysis.maxSafePositionSize,
+      effectiveMax,
+      reasons: analysis.reasons,
+    };
+  }
+
+  async manualOpen(symbol: string, direction: 'LONG' | 'SHORT', requestedAmount?: number) {
+    const cfg = this.config.get();
+    const price = this.scanner.getCurrentPrice(symbol);
+    if (!price) throw new Error(`No price available for ${symbol}`);
+
+    const analysis = await this.deepAnalysis.analyse(symbol, direction);
+    const maxSafe = analysis.maxSafePositionSize;
+
+    if (maxSafe < cfg.minPositionSize) {
+      throw new Error(`${symbol} liquidity too thin — max safe size $${maxSafe.toFixed(2)} is below minimum $${cfg.minPositionSize}`);
+    }
+
+    const capital = Math.min(
+      requestedAmount ?? cfg.maxCapitalPerEntry,
+      cfg.maxCapitalPerEntry,
+      this.balance * 0.1,
+      maxSafe,
+    );
+
+    if (capital <= 0) throw new Error(`Insufficient balance`);
+
+    const side = direction;
+    const quantity = (capital * cfg.leverage) / price;
+    const fee = capital * FEE_RATE;
+    const hardStop = side === 'LONG'
+      ? price * (1 - cfg.hardStopPct / 100)
+      : price * (1 + cfg.hardStopPct / 100);
+
+    this.balance -= fee;
+
+    const position = await this.prisma.position.create({
+      data: {
+        symbol, side,
+        status: side === 'LONG' ? 'OPEN_LONG' : 'OPEN_SHORT',
+        entryPrice: price, currentPrice: price,
+        quantity, leverage: cfg.leverage,
+        hardStop, activationPct: cfg.activationPct,
+        trailingPct: cfg.trailingPct, hardStopPct: cfg.hardStopPct,
+        avgEntryPrice: price,
+        highestPrice: side === 'LONG' ? price : null,
+        lowestPrice: side === 'SHORT' ? price : null,
+        fees: fee, entryCount: 1,
+      },
+    });
+
+    await this.prisma.order.create({
+      data: { positionId: position.id, type: 'MARKET', side: side === 'LONG' ? 'BUY' : 'SELL', price, quantity, fee },
+    });
+
+    await this.notify('POSITION_OPENED', `MANUAL ${side}`, `${symbol} @ $${price} capital=$${capital.toFixed(2)} maxSafe=$${maxSafe.toFixed(0)}`);
+    this.logger.log(`[MANUAL] Opened ${side} ${symbol} @ ${price} capital=$${capital.toFixed(2)} (maxSafe=$${maxSafe.toFixed(0)})`);
+    this.events.emit('position.opened', { position, manual: true });
+
+    return { success: true, symbol, side, price, capital, maxSafePositionSize: maxSafe, quantity };
   }
 
   getBalance() { return this.balance; }
