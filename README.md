@@ -36,52 +36,95 @@ Binance Futures WebSocket
 | Database    | PostgreSQL 16 (Docker), Prisma ORM             |
 | Scheduling  | @nestjs/schedule                               |
 | Events      | @nestjs/event-emitter                          |
-| Frontend    | Next.js 15, TypeScript                         |
-| UI          | TailwindCSS, Recharts                          |
+| Frontend    | Next.js 16, TypeScript                         |
+| UI          | TailwindCSS 4, Recharts                        |
 | Data fetch  | TanStack Query                                 |
 | Exchange    | Binance Futures WebSocket + REST API           |
+| Container   | Docker + Docker Compose                        |
 
 ---
 
 ## Prerequisites
 
-- Node.js 20+
-- Docker + Docker Compose
-- npm or yarn
+- Docker + Docker Compose (required)
+- Node.js 20+ (only needed for local non-Docker development)
 
 ---
 
-## Quick Start
+## Quick Start — Docker (recommended)
 
-### 1. Clone and install
+The entire stack (PostgreSQL + backend + frontend) runs in Docker with a single command.
 
-```bash
-# Install backend deps
-cd backend
-npm install
-
-# Install frontend deps
-cd ../frontend
-npm install
-```
-
-### 2. Start PostgreSQL
+### 1. Clone the repo
 
 ```bash
-cd ..   # project root
-docker compose up -d
+git clone <repo-url>
+cd trading-platform
 ```
 
-PostgreSQL will be available at `localhost:5432`.
+### 2. Create your environment file
 
-### 3. Configure environment
+```bash
+cp .env.example .env
+```
 
-Backend `.env` is pre-configured for local dev:
+The defaults work out of the box for paper trading. To use live trading, add your Binance API keys (see [Enabling Live Trading](#enabling-live-trading)).
+
+### 3. Start everything
+
+```bash
+docker compose up --build
+```
+
+| Service   | URL                              |
+|-----------|----------------------------------|
+| Dashboard | http://localhost:3000            |
+| API       | http://localhost:3001/api        |
+| Swagger   | http://localhost:3001/api/docs   |
+| Postgres  | localhost:5432                   |
+
+On first run Docker will:
+- Pull the PostgreSQL 16 image
+- Install all Node.js dependencies inside the containers
+- Run `prisma generate` + `prisma migrate deploy` automatically
+- Start the backend with hot-reload (`nest start --watch`)
+- Start the frontend with hot-reload (`next dev`)
+
+### 4. Stopping
+
+```bash
+docker compose down          # stop containers, keep data
+docker compose down -v       # stop containers AND delete all volumes (wipe DB)
+```
+
+---
+
+## Quick Start — Local (no Docker for app)
+
+If you prefer to run the app processes locally and only use Docker for PostgreSQL:
+
+### 1. Start PostgreSQL only
+
+```bash
+docker compose up postgres -d
+```
+
+### 2. Install dependencies
+
+```bash
+cd backend && npm install
+cd ../frontend && npm install
+```
+
+### 3. Configure backend environment
+
+The `backend/.env` is pre-configured for local dev:
+
 ```env
 DATABASE_URL="postgresql://trading:trading123@localhost:5432/trading_db"
 PORT=3001
-BINANCE_API_KEY=""       # optional — only needed for live trading
-BINANCE_API_SECRET=""    # optional — only needed for live trading
+BINANCE_API_KEY=""
+BINANCE_API_SECRET=""
 PAPER_TRADING=true
 INITIAL_BALANCE=10000
 ```
@@ -101,8 +144,6 @@ cd backend
 npm run start:dev
 ```
 
-Backend runs on **http://localhost:3001**
-
 ### 6. Start the frontend
 
 ```bash
@@ -110,29 +151,149 @@ cd frontend
 npm run dev
 ```
 
-Dashboard runs on **http://localhost:3000**
+---
+
+## Docker Details
+
+### Container overview
+
+| Container          | Image / Build           | Port  | Description                        |
+|--------------------|-------------------------|-------|------------------------------------|
+| `trading_postgres` | postgres:16-alpine      | 5432  | Database (named volume)            |
+| `trading_backend`  | `backend/Dockerfile.dev`| 3001  | NestJS API with hot-reload         |
+| `trading_frontend` | `frontend/Dockerfile.dev`| 3000 | Next.js dashboard with hot-reload  |
+
+### Named volumes
+
+| Volume                  | Mounted at               | Purpose                             |
+|-------------------------|--------------------------|-------------------------------------|
+| `postgres_data`         | `/var/lib/postgresql/data` | Persistent database storage       |
+| `backend_node_modules`  | `/app/node_modules`      | Isolated backend deps               |
+| `backend_dist`          | `/app/dist`              | NestJS compiled output              |
+| `frontend_node_modules` | `/app/node_modules`      | Isolated frontend deps              |
+| `frontend_next`         | `/app/.next`             | Next.js build cache                 |
+
+Source files (`backend/src`, `frontend/app`, etc.) are bind-mounted from the host so edits are picked up instantly by the hot-reload watchers.
+
+### Networking
+
+The frontend's `/api/*` proxy rewrites point to `http://backend:3001` inside the Docker network, so browser requests hit the Next.js dev server at port 3000 and are transparently forwarded to the backend. Outside Docker (local dev), the default fallback `http://localhost:3001` is used.
+
+### Development Dockerfile strategy
+
+Both dev Dockerfiles follow the same pattern:
+1. `COPY package*.json` + `RUN npm ci` — populates the named `node_modules` volume at image build time
+2. Host source directory is bind-mounted on top — changes are live immediately
+3. The named `node_modules` volume sits on top of the bind mount — host `node_modules` never interferes
+
+```
+Host bind mount:  ./backend  →  /app          (source files)
+Named volume:     backend_nm →  /app/node_modules  (overrides node_modules)
+```
+
+### Rebuilding after dependency changes
+
+If you add/remove npm packages, rebuild the affected image so the named volume is refreshed:
+
+```bash
+docker compose up --build backend     # rebuild backend only
+docker compose up --build frontend    # rebuild frontend only
+docker compose up --build             # rebuild everything
+```
+
+### Useful Docker commands
+
+```bash
+# Follow logs
+docker compose logs -f backend
+docker compose logs -f frontend
+
+# Open a shell in a container
+docker compose exec backend sh
+docker compose exec frontend sh
+
+# Access the database
+docker compose exec postgres psql -U trading -d trading_db
+
+# Run Prisma commands inside the backend container
+docker compose exec backend npx prisma studio
+docker compose exec backend npx prisma migrate dev --name <name>
+
+# Reset database (caution: destroys all data)
+docker compose exec backend npx prisma migrate reset --force
+```
+
+---
+
+## Production Deployment
+
+### Build and run
+
+```bash
+cp .env.example .env   # fill in real secrets
+docker compose -f docker-compose.prod.yml up -d --build
+```
+
+### Production vs dev differences
+
+| Concern         | Dev (`docker-compose.yml`)       | Prod (`docker-compose.prod.yml`)         |
+|-----------------|----------------------------------|------------------------------------------|
+| Build           | `Dockerfile.dev`                 | `Dockerfile` (multi-stage)               |
+| Source mount    | Bind-mount for hot-reload        | No bind mounts — baked into image        |
+| Backend CMD     | `nest start --watch`             | `node dist/main`                         |
+| Frontend CMD    | `next dev`                       | `node server.js` (standalone output)     |
+| Credentials     | Hard-coded defaults in compose   | All from `.env` (no defaults)            |
+| Backend health  | Postgres health check only       | Postgres + backend `/api/health` checks  |
+| Node env        | `development`                    | `production`                             |
+
+### Production Dockerfile strategy
+
+**Backend** — 3-stage build:
+1. `deps` — `npm ci --only=production`
+2. `builder` — full install + `prisma generate` + `nest build`
+3. `runner` — prod node_modules + generated Prisma client + compiled `dist/`
+
+**Frontend** — 2-stage build with Next.js `output: 'standalone'`:
+1. `builder` — full install + `next build`
+2. `runner` — minimal image running `node server.js` from standalone output
+
+---
+
+## Enabling Live Trading
+
+> **Warning**: Live trading places real orders on Binance Futures with real money.
+
+1. Add your Binance Futures API keys to `.env` (or `backend/.env` for local dev):
+   ```env
+   BINANCE_API_KEY=your_api_key
+   BINANCE_API_SECRET=your_api_secret
+   PAPER_TRADING=false
+   ```
+2. Restart the backend: `docker compose restart backend` (or `npm run start:dev`)
+3. Adjust risk parameters via the Config page or `PUT /api/config`
+4. Start the bot via the Bot Control page or `POST /api/bot/start`
 
 ---
 
 ## Dashboard Pages
 
-| Page          | URL                  | Description                              |
-|---------------|----------------------|------------------------------------------|
-| Dashboard     | `/`                  | Balance, equity, PnL, market prices      |
-| Positions     | `/positions`         | Open/closed positions with close button  |
-| Signals       | `/signals`           | Live signal scanner + historical signals |
-| Trades        | `/trades`            | Trade history with period filter         |
-| Analytics     | `/analytics`         | Equity curve, daily PnL, drawdown charts |
-| Risk          | `/risk`              | Drawdown, cooldowns, risk events         |
-| Config        | `/config`            | All bot parameters                       |
-| Bot Control   | `/bot-control`       | Start/stop/pause/emergency stop          |
-| System Health | `/system-health`     | Connection status, quick start guide     |
+| Page          | URL               | Description                              |
+|---------------|-------------------|------------------------------------------|
+| Dashboard     | `/`               | Balance, equity, PnL, market prices      |
+| Positions     | `/positions`      | Open/closed positions with close button  |
+| Signals       | `/signals`        | Live signal scanner + historical signals |
+| Trades        | `/trades`         | Trade history with period filter         |
+| Analytics     | `/analytics`      | Equity curve, daily PnL, drawdown charts |
+| Risk          | `/risk`           | Drawdown, cooldowns, risk events         |
+| Config        | `/config`         | All bot parameters                       |
+| Bot Control   | `/bot-control`    | Start/stop/pause/emergency stop          |
+| System Health | `/system-health`  | Connection status, quick start guide     |
 
 ---
 
 ## API Endpoints
 
-All endpoints are prefixed with `/api`.
+All endpoints are prefixed with `/api`. Full interactive docs at **http://localhost:3001/api/docs** (Swagger).
 
 ### Bot Control
 ```
@@ -146,19 +307,19 @@ POST /api/bot/emergency-stop # Close all + halt all trading
 
 ### Data
 ```
-GET /api/dashboard           # Full dashboard snapshot
-GET /api/positions           # All positions (?status=open for open only)
-GET /api/positions/:id       # Single position
-POST /api/positions/close    # { id } — manually close a position
-GET /api/signals             # Historical signals (?live=true for live scan)
-GET /api/trades              # Trade history (?period=today|week|month|all)
-GET /api/analytics           # Equity, PnL, drawdown (?days=30)
-GET /api/risk                # Risk stats, cooldowns, events
-GET /api/config              # Current bot config
-PUT /api/config              # Update bot config
-GET /api/health              # System health check
-GET /api/market/tickers      # All ticker prices
-GET /api/market/candles/:symbol/:timeframe  # OHLCV data
+GET  /api/dashboard                          # Full dashboard snapshot
+GET  /api/positions                          # All positions (?status=open)
+GET  /api/positions/:id                      # Single position
+POST /api/positions/close                    # { id } — manually close
+GET  /api/signals                            # Historical signals (?live=true)
+GET  /api/trades                             # Trade history (?period=today|week|month|all)
+GET  /api/analytics                          # Equity, PnL, drawdown (?days=30)
+GET  /api/risk                               # Risk stats, cooldowns, events
+GET  /api/config                             # Current bot config
+PUT  /api/config                             # Update bot config
+GET  /api/health                             # System health check
+GET  /api/market/tickers                     # All ticker prices
+GET  /api/market/candles/:symbol/:timeframe  # OHLCV data
 ```
 
 ---
@@ -178,7 +339,7 @@ Mirror of LONG with bearish conditions.
 
 ### Position Management
 ```
-Entry → OPEN_LONG/OPEN_SHORT
+Entry → OPEN_LONG / OPEN_SHORT
   ↓ price moves activationPct% in profit
 LONG_TRAILING / SHORT_TRAILING  ← trailing stop activated
   ↓ price hits trailingStop OR hardStop
@@ -200,34 +361,19 @@ score = 0.05 × 30s_change
 
 ## Default Configuration
 
-| Parameter              | Default | Description                        |
-|------------------------|---------|------------------------------------|
-| Max Active Symbols     | 5       | Max simultaneous open positions    |
-| Max Entries Per Symbol | 3       | Max pyramid entries                |
-| Capital Per Entry      | $1,000  | USDT per trade                     |
-| Initial Balance        | $10,000 | Paper trading starting balance     |
-| Leverage               | 5×      | Futures leverage                   |
-| Activation %           | 2%      | Profit to activate trailing        |
-| Trailing %             | 3%      | Trail distance from peak           |
-| Hard Stop %            | 5%      | Maximum loss per trade             |
-| Momentum Threshold     | 0.3     | Min score for signal               |
-| Max Daily Drawdown     | 5%      | Halt trading if exceeded           |
-| Cooldown Trigger       | 3 entries / 10 min → 5 min pause |              |
-
----
-
-## Enabling Live Trading
-
-> ⚠ **Warning**: Live trading places real orders on Binance with real money.
-
-1. Add your Binance Futures API keys to `backend/.env`:
-   ```env
-   BINANCE_API_KEY=your_api_key
-   BINANCE_API_SECRET=your_api_secret
-   ```
-2. Set `PAPER_TRADING=false` in `.env`
-3. Update the config via the Config page or `PUT /api/config`
-4. Start the bot via the Bot Control page
+| Parameter              | Default | Description                                      |
+|------------------------|---------|--------------------------------------------------|
+| Max Active Symbols     | 5       | Max simultaneous open positions                  |
+| Max Entries Per Symbol | 3       | Max pyramid entries                              |
+| Capital Per Entry      | $1,000  | USDT per trade                                   |
+| Initial Balance        | $10,000 | Paper trading starting balance                   |
+| Leverage               | 5×      | Futures leverage                                 |
+| Activation %           | 2%      | Profit required to activate trailing stop        |
+| Trailing %             | 3%      | Trail distance from peak/trough                  |
+| Hard Stop %            | 5%      | Maximum loss per trade                           |
+| Momentum Threshold     | 0.3     | Minimum score to generate a signal               |
+| Max Daily Drawdown     | 5%      | Halt trading if daily loss exceeds this          |
+| Cooldown Trigger       | 3 entries / 10 min → 5 min pause                |
 
 ---
 
@@ -235,41 +381,55 @@ score = 0.05 × 30s_change
 
 ```
 trading-platform/
-├── docker-compose.yml          # PostgreSQL only
+├── .env.example                    # Template — copy to .env and fill secrets
+├── .dockerignore                   # Root-level Docker build exclusions
+├── docker-compose.yml              # Dev stack: postgres + backend + frontend
+├── docker-compose.prod.yml         # Production stack (multi-stage builds)
+│
 ├── backend/
+│   ├── .dockerignore
+│   ├── Dockerfile.dev              # Dev image: npm ci → hot-reload via bind mount
+│   ├── Dockerfile                  # Prod image: 3-stage (deps → builder → runner)
 │   ├── prisma/
-│   │   ├── schema.prisma       # All DB models
-│   │   └── seed.ts             # Default config seed
+│   │   ├── schema.prisma           # All DB models
+│   │   └── seed.ts                 # Default config seed
 │   └── src/
-│       ├── prisma/             # PrismaService (global)
-│       ├── market-data/        # Binance WS + REST, candle cache
-│       ├── indicators/         # EMA, momentum, volume, breakout
-│       ├── signal-engine/      # Signal generation + persistence
-│       ├── position-engine/    # Position state machine + updates
-│       ├── risk-engine/        # Risk checks, cooldowns, emergency stop
-│       ├── analytics/          # Equity curve, stats, drawdown
-│       ├── config/             # Bot configuration (DB-backed)
-│       └── app.controller.ts   # All REST routes
+│       ├── prisma/                 # PrismaService (global)
+│       ├── market-data/            # Binance WS + REST, candle cache
+│       ├── indicators/             # EMA, momentum, volume, breakout
+│       ├── signal-engine/          # Signal generation + persistence
+│       ├── position-engine/        # Position state machine + updates
+│       ├── risk-engine/            # Risk checks, cooldowns, emergency stop
+│       ├── analytics/              # Equity curve, stats, drawdown
+│       ├── config/                 # Bot configuration (DB-backed)
+│       └── app.controller.ts       # All REST routes
+│
 └── frontend/
+    ├── .dockerignore
+    ├── Dockerfile.dev              # Dev image: npm ci → hot-reload via bind mount
+    ├── Dockerfile                  # Prod image: 2-stage standalone build
+    ├── next.config.ts              # /api/* proxy → BACKEND_URL env var
     └── app/
-        ├── page.tsx            # Dashboard
-        ├── positions/          # Positions table
-        ├── signals/            # Signal scanner
-        ├── trades/             # Trade history
-        ├── analytics/          # Charts
-        ├── risk/               # Risk monitor
-        ├── config/             # Configuration form
-        ├── bot-control/        # Bot controls
-        └── system-health/      # Health status
+        ├── page.tsx                # Dashboard
+        ├── positions/              # Positions table
+        ├── signals/                # Signal scanner
+        ├── trades/                 # Trade history
+        ├── analytics/              # Charts
+        ├── risk/                   # Risk monitor
+        ├── config/                 # Configuration form
+        ├── bot-control/            # Bot controls
+        └── system-health/          # Health status
 ```
 
 ---
 
 ## Development Notes
 
-- The Prisma client is generated at `npx prisma generate` — must be run after installing deps locally
+- Prisma migrations run automatically on container start (`prisma migrate deploy`)
+- The Prisma client is regenerated on every dev container start (`prisma generate`)
 - WebSocket reconnects automatically on disconnect with exponential backoff
 - Historical candles (200 × 1m) are loaded from Binance REST API on startup
 - All timeframes (30s–30m) are aggregated in-memory from 1m candles
 - Paper trading fees: 0.04% per side (Binance taker rate)
 - BigInt IDs from Prisma are serialized as strings in API responses
+- `BACKEND_URL` env var controls where the Next.js `/api/*` proxy points — defaults to `http://localhost:3001` outside Docker, set to `http://backend:3001` inside Docker compose
