@@ -113,6 +113,7 @@ export class DeepAnalysisService {
     else if (volumeRatio >= 2.0) volumeScore = 85;
     else if (volumeRatio >= 1.5) volumeScore = 65;
     else if (volumeRatio >= 1.2) volumeScore = 40;
+    else if (volumeRatio >= 1.0) volumeScore = 20;  // slightly elevated vs average
     else                         volumeScore = 0;
 
     if (volumeRatio >= 1.5) reasons.push(`Volume ${volumeRatio.toFixed(2)}x`);
@@ -122,6 +123,9 @@ export class DeepAnalysisService {
     const prev3 = candles5m.slice(-4, -1);
     const highestHigh = Math.max(...prev3.map(c => c.high));
     const lowestLow   = Math.min(...prev3.map(c => c.low));
+
+    // ATR needed early for near-breakout detection (compute on 5m, 14-period)
+    const atrEarly = this.calcATR(candles5m, 14);
 
     let breakoutScore = 0;
     let breakoutConfirmed = false;
@@ -134,16 +138,39 @@ export class DeepAnalysisService {
       breakoutScore = 100;
       breakoutConfirmed = true;
       reasons.push(`Breakdown below $${lowestLow.toFixed(4)}`);
+    } else if (direction === 'LONG') {
+      // Partial credit: price within 0.5× ATR of resistance
+      const gap = highestHigh - currentPrice;
+      if (gap <= atrEarly * 0.5) {
+        breakoutScore = 50;
+        reasons.push(`Near breakout — $${gap.toFixed(4)} below resistance`);
+      } else if (gap <= atrEarly) {
+        breakoutScore = 25;
+        reasons.push(`Approaching resistance — $${gap.toFixed(4)} below`);
+      } else {
+        breakoutScore = 0;
+        reasons.push('No breakout confirmed');
+      }
     } else {
-      breakoutScore = 0;
-      reasons.push('No breakout confirmed');
+      // SHORT partial credit
+      const gap = currentPrice - lowestLow;
+      if (gap <= atrEarly * 0.5) {
+        breakoutScore = 50;
+        reasons.push(`Near breakdown — $${gap.toFixed(4)} above support`);
+      } else if (gap <= atrEarly) {
+        breakoutScore = 25;
+        reasons.push(`Approaching support — $${gap.toFixed(4)} above`);
+      } else {
+        breakoutScore = 0;
+        reasons.push('No breakout confirmed');
+      }
     }
 
     // ── Candle Structure (last 3 × 5m) ─────────────────────────────────────
     const candleScore = this.analyseCandleStructure(candles5m.slice(-3), direction, reasons);
 
     // ── ATR / Volatility (14-period on 5m) ─────────────────────────────────
-    const atr = this.calcATR(candles5m, 14);
+    const atr = atrEarly;  // already computed above for near-breakout detection
     const atrPct = currentPrice > 0 ? (atr / currentPrice) * 100 : 0;
     const rangeExpansion = this.calcRangeExpansion(candles5m);
 
