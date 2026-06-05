@@ -1,4 +1,5 @@
 import { Injectable, OnModuleInit, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 
 export interface BotConfiguration {
@@ -54,6 +55,8 @@ export interface BotConfiguration {
   cooldownWindowMin: number;
   cooldownDurationMin: number;
 
+  requireVolumeGate: boolean;
+
   paperTrading: boolean;
   tradingEnabled: boolean;
   botRunning: boolean;
@@ -99,6 +102,8 @@ const DEFAULTS: BotConfiguration = {
   cooldownEntries: 3,
   cooldownWindowMin: 10,
   cooldownDurationMin: 5,
+  requireVolumeGate: true,
+
   paperTrading: true,
   tradingEnabled: false,
   botRunning: false,
@@ -110,7 +115,10 @@ export class BotConfigService implements OnModuleInit {
   private readonly logger = new Logger(BotConfigService.name);
   private config: BotConfiguration = { ...DEFAULTS };
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly configService: ConfigService,
+  ) {}
 
   async onModuleInit() {
     await this.loadConfig();
@@ -122,8 +130,13 @@ export class BotConfigService implements OnModuleInit {
       const map: Record<string, string> = {};
       for (const r of records) map[r.key] = r.value;
 
-      const num = (k: string, d: number) => map[k] !== undefined ? parseFloat(map[k]) : d;
+      const num  = (k: string, d: number)  => map[k] !== undefined ? parseFloat(map[k]) : d;
       const bool = (k: string, d: boolean) => map[k] !== undefined ? map[k] === 'true' : d;
+      const envBool = (k: string, envKey: string, d: boolean) => {
+        if (map[k] !== undefined) return map[k] === 'true';
+        const envVal = this.configService.get<string>(envKey);
+        return envVal !== undefined ? envVal !== 'false' : d;
+      };
 
       this.config = {
         maxActivePositions: num('maxActivePositions', DEFAULTS.maxActivePositions),
@@ -164,6 +177,8 @@ export class BotConfigService implements OnModuleInit {
         cooldownEntries: num('cooldownEntries', DEFAULTS.cooldownEntries),
         cooldownWindowMin: num('cooldownWindowMin', DEFAULTS.cooldownWindowMin),
         cooldownDurationMin: num('cooldownDurationMin', DEFAULTS.cooldownDurationMin),
+        requireVolumeGate: envBool('requireVolumeGate', 'REQUIRE_VOLUME_GATE', DEFAULTS.requireVolumeGate),
+
         paperTrading: bool('paperTrading', DEFAULTS.paperTrading),
         tradingEnabled: bool('tradingEnabled', DEFAULTS.tradingEnabled),
         botRunning: bool('botRunning', DEFAULTS.botRunning),

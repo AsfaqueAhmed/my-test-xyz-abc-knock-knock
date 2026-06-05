@@ -217,7 +217,7 @@ export class DeepAnalysisService {
 
     // ── Minimum pass thresholds ─────────────────────────────────────────────
     const passed =
-      volumeRatio >= 1.3 &&
+      (!cfg.requireVolumeGate || volumeRatio >= 1.3) &&
       breakoutConfirmed &&
       atrPct <= 5 &&
       rangeExpansion <= cfg.maxRangeExpansionRatio &&

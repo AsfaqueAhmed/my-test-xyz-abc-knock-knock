@@ -64,7 +64,7 @@ export class TradeValidatorService {
     if (!passed) {
       if (tradeScore < cfg.tradeScoreThreshold) {
         failureReason = `Trade score ${tradeScore.toFixed(1)} < threshold ${cfg.tradeScoreThreshold}`;
-      } else if (analysis.volumeRatio < 1.3) {
+      } else if (cfg.requireVolumeGate && analysis.volumeRatio < 1.3) {
         failureReason = `Volume ratio ${analysis.volumeRatio.toFixed(2)} < 1.3`;
       } else if (!analysis.breakoutConfirmed) {
         failureReason = 'Breakout not confirmed';
