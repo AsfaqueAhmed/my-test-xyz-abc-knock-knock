@@ -120,6 +120,13 @@ export default function ConfigPage() {
           <Field label="Cooldown Duration (min)" name="cooldownDurationMin" value={form.cooldownDurationMin ?? ''} onChange={handleChange} min={1} max={120} step={1} hint="How long trading is paused per symbol" />
         </Section>
 
+        <Section title="False Alarm Filter">
+          <Field label="Failure Threshold" name="falseAlarmFailureThreshold" value={form.falseAlarmFailureThreshold ?? ''} onChange={handleChange} min={1} max={500} step={1} hint="Consecutive failures before cooldown kicks in" />
+          <Field label="Base Cooldown (turns)" name="falseAlarmBaseCooldown" value={form.falseAlarmBaseCooldown ?? ''} onChange={handleChange} min={1} max={10000} step={1} hint="Initial cooldown length in scan turns" />
+          <Field label="Cooldown Multiplier" name="falseAlarmMultiplier" value={form.falseAlarmMultiplier ?? ''} onChange={handleChange} min={1} max={10} step={0.1} hint="Exponential back-off factor per repeated offense" />
+          <Field label="Max Cooldown (turns)" name="falseAlarmMaxCooldown" value={form.falseAlarmMaxCooldown ?? ''} onChange={handleChange} min={1} max={100000} step={1} hint="Upper cap on cooldown length" />
+        </Section>
+
         <Section title="Scanner Pipeline">
           <Field label="Scan Interval (sec)" name="scanIntervalSec" value={form.scanIntervalSec ?? ''} onChange={handleChange} min={1} max={60} step={1} hint="How often to fetch prices from Binance and snapshot history" />
           <Field label="Price History (hrs)" name="priceHistoryHours" value={form.priceHistoryHours ?? ''} onChange={handleChange} min={1} max={24} step={1} hint="Rolling price history window kept in memory" />

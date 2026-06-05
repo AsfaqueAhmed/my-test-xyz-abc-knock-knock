@@ -28,6 +28,7 @@ export interface FalseAlarmRecord {
   offenseCount: number;          // total times false-alarmed — drives dynamic cooldown
   cooldownEndsAtTurn: number;    // turn when cooldown expires (0 = not in cooldown)
   lastUpdatedTurn: number;
+  lastFailureReason?: string;    // most recent reason for failure
 }
 
 @Injectable()
@@ -194,11 +195,12 @@ export class MomentumRankerService {
   }
 
   // Called by DeepAnalysisService when a symbol fails trade validation
-  recordFailure(symbol: string, turn: number) {
+  recordFailure(symbol: string, turn: number, reason?: string) {
     const cfg = this.config.get();
     const fa = this.getOrCreateFalseAlarm(symbol);
     fa.consecutiveFailures++;
     fa.lastUpdatedTurn = turn;
+    if (reason) fa.lastFailureReason = reason;
 
     this.logger.debug(
       `${symbol} consecutive failures: ${fa.consecutiveFailures}/${cfg.falseAlarmFailureThreshold}`
@@ -225,6 +227,8 @@ export class MomentumRankerService {
         offenseCount: fa.offenseCount,
         cooldownTurns: cooldown,
         cooldownEndsAtTurn: fa.cooldownEndsAtTurn,
+        threshold: cfg.falseAlarmFailureThreshold,
+        reason: fa.lastFailureReason ?? 'Unknown',
       });
     }
 

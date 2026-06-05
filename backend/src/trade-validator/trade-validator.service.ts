@@ -18,6 +18,7 @@ export interface TradeValidationResult {
   openInterest: number;
   openInterestNotional: number;
   passed: boolean;
+  failureReason?: string;      // primary reason when !passed
   reasons: string[];
 }
 
@@ -52,10 +53,29 @@ export class TradeValidatorService {
 
     const passed = tradeScore >= cfg.tradeScoreThreshold && analysis.passed;
 
-    if (passed) {
+    if (tradeScore >= cfg.tradeScoreThreshold) {
       reasons.push(`Trade score ${tradeScore.toFixed(1)} ≥ threshold ${cfg.tradeScoreThreshold}`);
     } else {
       reasons.push(`Trade score ${tradeScore.toFixed(1)} < threshold ${cfg.tradeScoreThreshold}`);
+    }
+
+    let failureReason: string | undefined;
+    if (!passed) {
+      if (tradeScore < cfg.tradeScoreThreshold) {
+        failureReason = `Trade score ${tradeScore.toFixed(1)} < threshold ${cfg.tradeScoreThreshold}`;
+      } else if (analysis.trendScore < 100) {
+        failureReason = `Trend score ${analysis.trendScore} < 100`;
+      } else if (analysis.volumeRatio < 1.5) {
+        failureReason = `Volume ratio ${analysis.volumeRatio.toFixed(2)} < 1.5`;
+      } else if (!analysis.breakoutConfirmed) {
+        failureReason = 'Breakout not confirmed';
+      } else if (analysis.atrPct > 5) {
+        failureReason = `ATR% ${analysis.atrPct.toFixed(2)} > 5`;
+      } else if (!analysis.liquidityPassed) {
+        failureReason = `Low liquidity volume=$${analysis.quoteVolume24h.toFixed(0)}`;
+      } else {
+        failureReason = 'Deep analysis failed';
+      }
     }
 
     return {
@@ -73,6 +93,7 @@ export class TradeValidatorService {
       openInterest: analysis.openInterest,
       openInterestNotional: analysis.openInterestNotional,
       passed,
+      failureReason,
       reasons,
     };
   }

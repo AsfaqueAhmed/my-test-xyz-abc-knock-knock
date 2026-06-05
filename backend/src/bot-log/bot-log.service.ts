@@ -133,12 +133,17 @@ export class BotLogService {
   // ─── Risk Events ──────────────────────────────────────────────────────────
 
   @OnEvent('falseAlarm.triggered')
-  onFalseAlarm({ symbol, offenseCount, cooldownTurns }: any) {
+  onFalseAlarm({ symbol, offenseCount, cooldownTurns, cooldownEndsAtTurn, threshold, reason }: any) {
+    const description =
+      `Ranked in top candidates ${threshold} times in a row without passing validation. ` +
+      `Last failure: "${reason}". ` +
+      `This is offense #${offenseCount} — symbol is blocked for ${cooldownTurns} scan turns.`;
+
     void this.write(
       'WARN', 'RISK', 'FALSE_ALARM',
-      `${symbol} false alarm #${offenseCount} — cooldown ${cooldownTurns} turns`,
+      `${symbol} — false alarm #${offenseCount} · blocked ${cooldownTurns} turns · ${reason}`,
       symbol,
-      { offenseCount, cooldownTurns },
+      { offenseCount, cooldownTurns, cooldownEndsAtTurn, threshold, reason, description },
     );
   }
 

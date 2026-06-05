@@ -112,7 +112,7 @@ export class PortfolioManagerService implements OnModuleInit {
     for (const candidate of allCandidates) {
       try {
         const momentum = this.ranker.getMomentumScore(candidate.symbol);
-        if (!momentum) { this.ranker.recordFailure(candidate.symbol, turn); continue; }
+        if (!momentum) { this.ranker.recordFailure(candidate.symbol, turn, 'No momentum score — price history too thin'); continue; }
 
         const analysis = await this.deepAnalysis.analyse(candidate.symbol, candidate.direction);
         const validation = this.validator.validate(momentum, analysis);
@@ -123,11 +123,12 @@ export class PortfolioManagerService implements OnModuleInit {
           this.ranker.recordPass(candidate.symbol);
           passingCandidates.push(validation);
         } else {
-          this.ranker.recordFailure(candidate.symbol, turn);
+          const topReason = validation.failureReason ?? validation.reasons.slice(-1)[0] ?? 'Validation failed';
+          this.ranker.recordFailure(candidate.symbol, turn, topReason);
         }
       } catch (err) {
         this.logger.error(`Deep analysis failed for ${candidate.symbol}: ${err.message}`);
-        this.ranker.recordFailure(candidate.symbol, turn);
+        this.ranker.recordFailure(candidate.symbol, turn, `Analysis error: ${err.message}`);
       }
     }
 
