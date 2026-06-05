@@ -89,6 +89,96 @@ docker compose -f docker-compose.prod.yml up -d --build
 
 ---
 
+## Deploying a Single Service (Without Rebuilding Everything)
+
+When you only change the backend or only the frontend, there is no need to rebuild and restart the entire stack. Target the service by name.
+
+### Backend only
+
+```bash
+# On your Mac — push the change
+git add .
+git commit -m "feat(backend): ..."
+git push
+
+# On your VPS
+cd my-test-xyz-abc-knock-knock
+git pull
+docker compose -f docker-compose.prod.yml up -d --build --no-deps backend
+```
+
+`--no-deps` prevents Docker from also recreating `postgres` and `frontend`.
+
+### Frontend only
+
+```bash
+# On your VPS
+git pull
+docker compose -f docker-compose.prod.yml up -d --build --no-deps frontend
+```
+
+### Restart a service without rebuilding (config / env change only)
+
+```bash
+docker compose -f docker-compose.prod.yml restart backend
+# or
+docker compose -f docker-compose.prod.yml restart frontend
+```
+
+---
+
+## Database Migrations
+
+Migrations run automatically when the backend container starts (the `CMD` in the Dockerfile calls `prisma migrate deploy` before `node dist/src/main`). For manual control use the commands below.
+
+### Run pending migrations now (without restarting the app)
+
+```bash
+docker compose -f docker-compose.prod.yml exec backend npx prisma migrate deploy
+```
+
+### Check migration status
+
+```bash
+docker compose -f docker-compose.prod.yml exec backend npx prisma migrate status
+```
+
+### Apply a new migration after a schema change
+
+1. **Locally** — generate the migration file and commit it:
+
+```bash
+# In your local backend directory
+npx prisma migrate dev --name describe_your_change
+git add prisma/migrations
+git commit -m "chore(db): add migration describe_your_change"
+git push
+```
+
+2. **On the VPS** — pull and apply:
+
+```bash
+cd my-test-xyz-abc-knock-knock
+git pull
+docker compose -f docker-compose.prod.yml exec backend npx prisma migrate deploy
+```
+
+3. If the schema change also requires a backend rebuild, combine both steps:
+
+```bash
+git pull
+docker compose -f docker-compose.prod.yml up -d --build --no-deps backend
+# migrations run automatically on container start
+```
+
+### Reset the database (⚠️ destroys all data — dev/staging only)
+
+```bash
+docker compose -f docker-compose.prod.yml exec backend npx prisma migrate reset --force
+```
+
+---
+
 ## Useful Commands
 
 | Command | Description |
