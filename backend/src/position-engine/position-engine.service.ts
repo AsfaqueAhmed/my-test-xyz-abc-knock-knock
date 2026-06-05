@@ -382,9 +382,31 @@ export class PositionEngineService implements OnModuleInit {
   async checkManual(symbol: string, direction: 'LONG' | 'SHORT') {
     const price = this.scanner.getCurrentPrice(symbol);
     if (!price) throw new Error(`No price available for ${symbol}`);
-    const analysis = await this.deepAnalysis.analyse(symbol, direction);
+
+    const opposite = direction === 'LONG' ? 'SHORT' : 'LONG';
+    const [analysis, oppositeAnalysis] = await Promise.all([
+      this.deepAnalysis.analyse(symbol, direction),
+      this.deepAnalysis.analyse(symbol, opposite),
+    ]);
+
     const cfg = this.config.get();
     const effectiveMax = Math.min(cfg.maxCapitalPerEntry, this.balance * 0.1, analysis.maxSafePositionSize);
+
+    const partialScore = (a: typeof analysis) =>
+      a.trendScore   * cfg.weightTrend    / 100 +
+      a.volumeScore  * cfg.weightVolume   / 100 +
+      a.breakoutScore * cfg.weightBreakout / 100 +
+      a.candleScore  * cfg.weightCandle   / 100;
+
+    const thisScore     = partialScore(analysis);
+    const oppositeScore = partialScore(oppositeAnalysis);
+
+    let directionWarning: string | undefined;
+    if (oppositeScore > thisScore + 10) {
+      directionWarning =
+        `${opposite} scores ${oppositeScore.toFixed(1)} vs ${direction} ${thisScore.toFixed(1)} on structure — consider ${opposite} instead`;
+    }
+
     return {
       symbol,
       direction,
@@ -392,6 +414,10 @@ export class PositionEngineService implements OnModuleInit {
       maxSafePositionSize: analysis.maxSafePositionSize,
       effectiveMax,
       reasons: analysis.reasons,
+      structureScore: thisScore,
+      oppositeDirection: opposite,
+      oppositeStructureScore: oppositeScore,
+      directionWarning,
     };
   }
 

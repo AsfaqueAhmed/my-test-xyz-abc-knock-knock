@@ -87,6 +87,11 @@ export class DeepAnalysisService {
         trendScore = 0;
         reasons.push('Trend not bullish');
       }
+      if (ema20 < ema50 && ema50 < ema200) {
+        reasons.push('WARNING: full bearish EMA stack (EMA20<EMA50<EMA200) — SHORT likely scores higher');
+      } else if (currentPrice < ema200) {
+        reasons.push(`WARNING: price below EMA200 ($${ema200.toFixed(6)}) — bearish structural bias`);
+      }
     } else {
       if (ema20 < ema50 && ema50 < ema200) {
         trendScore = 100;
@@ -99,6 +104,11 @@ export class DeepAnalysisService {
       } else {
         trendScore = 0;
         reasons.push('Trend not bearish');
+      }
+      if (ema20 > ema50 && ema50 > ema200) {
+        reasons.push('WARNING: full bullish EMA stack (EMA20>EMA50>EMA200) — LONG likely scores higher');
+      } else if (currentPrice > ema200) {
+        reasons.push(`WARNING: price above EMA200 ($${ema200.toFixed(6)}) — bullish structural bias`);
       }
     }
 
