@@ -15,6 +15,7 @@ const FEE_RATE = 0.0004;
 export class PositionEngineService implements OnModuleInit {
   private readonly logger = new Logger(PositionEngineService.name);
   private balance = 10000;
+  private openingSymbols = new Set<string>(); // prevents concurrent opens for the same symbol
 
   constructor(
     private readonly prisma: PrismaService,
@@ -33,8 +34,17 @@ export class PositionEngineService implements OnModuleInit {
 
   private async recoverBalance() {
     const trades = await this.prisma.tradeHistory.findMany();
-    const totalPnl = trades.reduce((s, t) => s + t.pnl - t.fees, 0);
-    this.balance = this.config.get().initialBalance + totalPnl;
+    const closedPnl = trades.reduce((s, t) => s + t.pnl - t.fees, 0);
+
+    // Entry fees for open positions were already deducted from balance but are
+    // not in tradeHistory (closed only) — re-deduct them to avoid overstating balance.
+    const openPositions = await this.prisma.position.findMany({
+      where: { status: { in: ['OPEN_LONG', 'LONG_TRAILING', 'OPEN_SHORT', 'SHORT_TRAILING'] } },
+      select: { fees: true },
+    });
+    const openEntryFees = openPositions.reduce((s, p) => s + Number(p.fees ?? 0), 0);
+
+    this.balance = this.config.get().initialBalance + closedPnl - openEntryFees;
   }
 
   // ─── Portfolio Manager Events ─────────────────────────────────────────────
@@ -45,26 +55,55 @@ export class PositionEngineService implements OnModuleInit {
   }
 
   @OnEvent('portfolio.replacePosition')
-  async onReplacePosition({ closePositionId, openCandidate }: { closePositionId: string; openCandidate: TradeValidationResult }) {
+  async onReplacePosition({
+    closePositionId, openCandidate, closedSymbol, closedScore, newScore, opportunityScore,
+  }: {
+    closePositionId: string;
+    openCandidate: TradeValidationResult;
+    closedSymbol: string;
+    closedScore: number;
+    newScore: number;
+    opportunityScore: number;
+  }) {
     // Open the new position FIRST — the slot isn't free yet so we must bypass the position limit.
     // Only close the old position if the open actually succeeds; otherwise leave it untouched.
     const opened = await this.tryOpen(openCandidate, { ignorePositionLimit: true });
     if (!opened) {
       this.logger.warn(
-        `Replacement open failed for ${openCandidate.symbol} — keeping existing position ${closePositionId}`
+        `Replacement skipped — ${closedSymbol} kept | ${openCandidate.symbol} failed to open (score ${newScore.toFixed(1)}, opportunity +${opportunityScore.toFixed(1)})`
       );
       return;
     }
     const pos = await this.getPosition(closePositionId);
-    if (pos) await this.closePosition(pos, undefined, 'REPLACED_BY_OPPORTUNITY');
+    if (pos) {
+      this.logger.log(
+        `REPLACED_BY_OPPORTUNITY: ${closedSymbol} (score ${closedScore.toFixed(1)}) → ${openCandidate.symbol} (score ${newScore.toFixed(1)}, +${opportunityScore.toFixed(1)} opportunity)`
+      );
+      await this.closePosition(pos, undefined, 'REPLACED_BY_OPPORTUNITY');
+    }
   }
 
   // ─── Position Opening ─────────────────────────────────────────────────────
 
   async tryOpen(candidate: TradeValidationResult, opts: { ignorePositionLimit?: boolean } = {}): Promise<boolean> {
-    const cfg = this.config.get();
     const { symbol, direction } = candidate;
     const side = direction as 'LONG' | 'SHORT';
+
+    if (this.openingSymbols.has(symbol)) {
+      this.logger.debug(`Skipping ${symbol} — open already in progress`);
+      return false;
+    }
+    this.openingSymbols.add(symbol);
+    try {
+      return await this._tryOpen(candidate, opts, side);
+    } finally {
+      this.openingSymbols.delete(symbol);
+    }
+  }
+
+  private async _tryOpen(candidate: TradeValidationResult, opts: { ignorePositionLimit?: boolean }, side: 'LONG' | 'SHORT'): Promise<boolean> {
+    const cfg = this.config.get();
+    const { symbol } = candidate;
 
     // Check for existing position to pyramid
     const existing = await this.prisma.position.findFirst({
@@ -111,7 +150,7 @@ export class PositionEngineService implements OnModuleInit {
 
     const capital = Math.min(cfg.maxCapitalPerEntry, this.balance * 0.1, candidate.maxSafePositionSize);
     const quantity = (capital * cfg.leverage) / price;
-    const fee = capital * FEE_RATE;
+    const fee = price * quantity * FEE_RATE;
 
     const hardStop = side === 'LONG'
       ? price * (1 - cfg.hardStopPct / 100)
@@ -170,7 +209,7 @@ export class PositionEngineService implements OnModuleInit {
 
     const capital = Math.min(cfg.maxCapitalPerEntry, this.balance * 0.1, candidate.maxSafePositionSize);
     const newQty = (capital * cfg.leverage) / price;
-    const fee = capital * FEE_RATE;
+    const fee = price * newQty * FEE_RATE;
     const totalQty = position.quantity + newQty;
     const newAvgEntry = (Number(position.avgEntryPrice) * Number(position.quantity) + price * newQty) / totalQty;
 
@@ -379,7 +418,7 @@ export class PositionEngineService implements OnModuleInit {
 
     const side = direction;
     const quantity = (capital * cfg.leverage) / price;
-    const fee = capital * FEE_RATE;
+    const fee = price * quantity * FEE_RATE;
     const hardStop = side === 'LONG'
       ? price * (1 - cfg.hardStopPct / 100)
       : price * (1 + cfg.hardStopPct / 100);

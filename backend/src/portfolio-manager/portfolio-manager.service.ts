@@ -293,6 +293,10 @@ export class PortfolioManagerService implements OnModuleInit {
         this.events.emit('portfolio.replacePosition', {
           closePositionId: weakest.positionId,
           openCandidate: candidate,
+          closedSymbol: weakest.symbol,
+          closedScore: weakest.score,
+          newScore: candidateScore,
+          opportunityScore,
         });
       }
     }

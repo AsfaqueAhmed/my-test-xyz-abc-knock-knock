@@ -78,7 +78,8 @@ export class RiskEngineService {
       };
     }
 
-    // Check per-symbol entries
+    // Only one open position record per symbol at a time.
+    // Pyramid entries are tracked inside that record via entryCount, not as separate rows.
     const symbolPositions = await this.prisma.position.count({
       where: {
         symbol,
@@ -86,8 +87,8 @@ export class RiskEngineService {
       },
     });
 
-    if (symbolPositions >= config.maxEntriesPerSymbol) {
-      return { allowed: false, reason: `Max entries for ${symbol} reached` };
+    if (symbolPositions > 0) {
+      return { allowed: false, reason: `Position already open for ${symbol}` };
     }
 
     return { allowed: true };
