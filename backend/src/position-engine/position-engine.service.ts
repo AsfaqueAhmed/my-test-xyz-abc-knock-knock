@@ -7,6 +7,7 @@ import { MarketScannerService } from '../market-scanner/market-scanner.service';
 import { RiskEngineService } from '../risk-engine/risk-engine.service';
 import { BotConfigService } from '../config/bot-config.service';
 import { DeepAnalysisService } from '../deep-analysis/deep-analysis.service';
+import { BalanceService } from '../balance/balance.service';
 import { TradeValidationResult } from '../trade-validator/trade-validator.service';
 
 const FEE_RATE = 0.0004;
@@ -14,7 +15,6 @@ const FEE_RATE = 0.0004;
 @Injectable()
 export class PositionEngineService implements OnModuleInit {
   private readonly logger = new Logger(PositionEngineService.name);
-  private balance = 10000;
   private openingSymbols = new Set<string>(); // prevents concurrent opens for the same symbol
 
   constructor(
@@ -23,28 +23,12 @@ export class PositionEngineService implements OnModuleInit {
     private readonly risk: RiskEngineService,
     private readonly config: BotConfigService,
     private readonly deepAnalysis: DeepAnalysisService,
+    private readonly balanceService: BalanceService,
     private readonly events: EventEmitter2,
   ) {}
 
   async onModuleInit() {
-    const cfg = this.config.get();
-    this.balance = cfg.initialBalance;
-    await this.recoverBalance();
-  }
-
-  private async recoverBalance() {
-    const trades = await this.prisma.tradeHistory.findMany();
-    const closedPnl = trades.reduce((s, t) => s + t.pnl - t.fees, 0);
-
-    // Entry fees for open positions were already deducted from balance but are
-    // not in tradeHistory (closed only) — re-deduct them to avoid overstating balance.
-    const openPositions = await this.prisma.position.findMany({
-      where: { status: { in: ['OPEN_LONG', 'LONG_TRAILING', 'OPEN_SHORT', 'SHORT_TRAILING'] } },
-      select: { fees: true },
-    });
-    const openEntryFees = openPositions.reduce((s, p) => s + Number(p.fees ?? 0), 0);
-
-    this.balance = this.config.get().initialBalance + closedPnl - openEntryFees;
+    // Balance is owned by BalanceService — nothing to initialise here.
   }
 
   // ─── Portfolio Manager Events ─────────────────────────────────────────────
@@ -148,15 +132,23 @@ export class PositionEngineService implements OnModuleInit {
       return false;
     }
 
-    const capital = Math.min(cfg.maxCapitalPerEntry, this.balance * 0.1, candidate.maxSafePositionSize);
+    const balance = this.balanceService.getBalance();
+    if (balance <= 0) {
+      this.logger.warn(`Cannot open ${symbol} ${side}: balance is $${balance.toFixed(2)}`);
+      return false;
+    }
+
+    const capital = Math.min(cfg.maxCapitalPerEntry, balance * 0.1, candidate.maxSafePositionSize);
+    if (capital > balance) {
+      this.logger.warn(`Cannot open ${symbol} ${side}: capital $${capital.toFixed(2)} exceeds balance $${balance.toFixed(2)}`);
+      return false;
+    }
     const quantity = (capital * cfg.leverage) / price;
     const fee = price * quantity * FEE_RATE;
 
     const hardStop = side === 'LONG'
       ? price * (1 - cfg.hardStopPct / 100)
       : price * (1 + cfg.hardStopPct / 100);
-
-    this.balance -= fee;
 
     const position = await this.prisma.position.create({
       data: {
@@ -181,6 +173,7 @@ export class PositionEngineService implements OnModuleInit {
     await this.prisma.order.create({
       data: { positionId: position.id, type: 'MARKET', side: side === 'LONG' ? 'BUY' : 'SELL', price, quantity, fee },
     });
+    await this.balanceService.recordTradeOpen(symbol, position.id, fee);
 
     await this.notify('POSITION_OPENED', `${side} opened`, `${symbol} @ $${price.toFixed(4)} score=${candidate.tradeScore.toFixed(1)}`);
     this.logger.log(`Opened ${side} ${symbol} @ ${price} (score ${candidate.tradeScore.toFixed(1)})`);
@@ -199,21 +192,26 @@ export class PositionEngineService implements OnModuleInit {
     }
 
     const isLong = position.side === 'LONG';
-    const isProfitable = isLong ? price > Number(position.avgEntryPrice) : price < Number(position.avgEntryPrice);
-    if (!isProfitable) return false;
+    const profitPct = isLong
+      ? (price - Number(position.avgEntryPrice)) / Number(position.avgEntryPrice) * 100
+      : (Number(position.avgEntryPrice) - price) / Number(position.avgEntryPrice) * 100;
+    // Require at least 1% profit before adding to a position to avoid averaging into a reversal
+    if (profitPct < 1.0) return false;
 
     const momentumStrong = candidate.momentumScore >= 50;
     const breakoutConfirmed = candidate.breakoutScore > 0;
     const scoreImproving = candidate.tradeScore >= cfg.tradeScoreThreshold;
     if (!momentumStrong || !breakoutConfirmed || !scoreImproving) return false;
 
-    const capital = Math.min(cfg.maxCapitalPerEntry, this.balance * 0.1, candidate.maxSafePositionSize);
+    const balance = this.balanceService.getBalance();
+    if (balance <= 0) return false;
+
+    const capital = Math.min(cfg.maxCapitalPerEntry, balance * 0.1, candidate.maxSafePositionSize);
+    if (capital > balance) return false;
     const newQty = (capital * cfg.leverage) / price;
     const fee = price * newQty * FEE_RATE;
     const totalQty = position.quantity + newQty;
     const newAvgEntry = (Number(position.avgEntryPrice) * Number(position.quantity) + price * newQty) / totalQty;
-
-    this.balance -= fee;
 
     await this.prisma.position.update({
       where: { id: position.id },
@@ -223,6 +221,7 @@ export class PositionEngineService implements OnModuleInit {
     await this.prisma.order.create({
       data: { positionId: position.id, type: 'MARKET', side: isLong ? 'BUY' : 'SELL', price, quantity: newQty, fee },
     });
+    await this.balanceService.recordTradeOpen(position.symbol, position.id, fee);
 
     this.logger.log(`Pyramided ${position.symbol} ${position.side} @ ${price} (entry ${position.entryCount + 1})`);
     this.events.emit('position.pyramided', {
@@ -335,7 +334,7 @@ export class PositionEngineService implements OnModuleInit {
     const exitFee = exitPrice * Number(pos.quantity) * FEE_RATE;
     const netPnl = pnl - exitFee;
 
-    this.balance += netPnl;
+    await this.balanceService.recordTradeClose(pos.symbol, pos.id, netPnl);
     this.risk.updateDailyPnl(netPnl);
 
     const duration = Math.floor((Date.now() - new Date(pos.openedAt).getTime()) / 1000);
@@ -367,8 +366,8 @@ export class PositionEngineService implements OnModuleInit {
     try {
       await this.prisma.performanceStat.upsert({
         where: { date: today },
-        update: { dailyPnl: { increment: pnl }, totalTrades: { increment: 1 }, winningTrades: isWin ? { increment: 1 } : undefined, losingTrades: !isWin ? { increment: 1 } : undefined, totalFees: { increment: fee }, equity: this.balance },
-        create: { date: today, dailyPnl: pnl, totalTrades: 1, winningTrades: isWin ? 1 : 0, losingTrades: isWin ? 0 : 1, totalFees: fee, equity: this.balance },
+        update: { dailyPnl: { increment: pnl }, totalTrades: { increment: 1 }, winningTrades: isWin ? { increment: 1 } : undefined, losingTrades: !isWin ? { increment: 1 } : undefined, totalFees: { increment: fee }, equity: this.balanceService.getBalance() },
+        create: { date: today, dailyPnl: pnl, totalTrades: 1, winningTrades: isWin ? 1 : 0, losingTrades: isWin ? 0 : 1, totalFees: fee, equity: this.balanceService.getBalance() },
       });
     } catch (_) {}
   }
@@ -411,7 +410,7 @@ export class PositionEngineService implements OnModuleInit {
     ]);
 
     const cfg = this.config.get();
-    const effectiveMax = Math.min(cfg.maxCapitalPerEntry, this.balance * 0.1, analysis.maxSafePositionSize);
+    const effectiveMax = Math.min(cfg.maxCapitalPerEntry, this.balanceService.getBalance() * 0.1, analysis.maxSafePositionSize);
 
     const partialScore = (a: typeof analysis) =>
       a.trendScore   * cfg.weightTrend    / 100 +
@@ -454,14 +453,18 @@ export class PositionEngineService implements OnModuleInit {
       throw new Error(`${symbol} liquidity too thin — max safe size $${maxSafe.toFixed(2)} is below minimum $${cfg.minPositionSize}`);
     }
 
+    const balance = this.balanceService.getBalance();
+    if (balance <= 0) throw new Error(`Insufficient balance`);
+
     const capital = Math.min(
       requestedAmount ?? cfg.maxCapitalPerEntry,
       cfg.maxCapitalPerEntry,
-      this.balance * 0.1,
+      balance * 0.1,
       maxSafe,
     );
 
     if (capital <= 0) throw new Error(`Insufficient balance`);
+    if (capital > balance) throw new Error(`Capital $${capital.toFixed(2)} exceeds available balance $${balance.toFixed(2)}`);
 
     const side = direction;
     const quantity = (capital * cfg.leverage) / price;
@@ -469,8 +472,6 @@ export class PositionEngineService implements OnModuleInit {
     const hardStop = side === 'LONG'
       ? price * (1 - cfg.hardStopPct / 100)
       : price * (1 + cfg.hardStopPct / 100);
-
-    this.balance -= fee;
 
     const position = await this.prisma.position.create({
       data: {
@@ -490,6 +491,7 @@ export class PositionEngineService implements OnModuleInit {
     await this.prisma.order.create({
       data: { positionId: position.id, type: 'MARKET', side: side === 'LONG' ? 'BUY' : 'SELL', price, quantity, fee },
     });
+    await this.balanceService.recordTradeOpen(symbol, position.id, fee);
 
     await this.notify('POSITION_OPENED', `MANUAL ${side}`, `${symbol} @ $${price} capital=$${capital.toFixed(2)} maxSafe=$${maxSafe.toFixed(0)}`);
     this.logger.log(`[MANUAL] Opened ${side} ${symbol} @ ${price} capital=$${capital.toFixed(2)} (maxSafe=$${maxSafe.toFixed(0)})`);
@@ -498,7 +500,7 @@ export class PositionEngineService implements OnModuleInit {
     return { success: true, symbol, side, price, capital, maxSafePositionSize: maxSafe, quantity };
   }
 
-  getBalance() { return this.balance; }
+  getBalance() { return this.balanceService.getBalance(); }
   async getOpenPositions() {
     return this.prisma.position.findMany({ where: { status: { in: ['OPEN_LONG','LONG_TRAILING','OPEN_SHORT','SHORT_TRAILING'] } }, orderBy: { openedAt: 'desc' } });
   }

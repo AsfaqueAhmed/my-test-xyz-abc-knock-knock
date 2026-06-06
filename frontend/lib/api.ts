@@ -139,6 +139,52 @@ export async function manualTrade(symbol: string, direction: 'LONG' | 'SHORT', a
   return data;
 }
 
+export interface BalanceStats {
+  currentBalance: number;
+  totalDeposited: number;
+  totalWithdrawn: number;
+  totalPnl: number;
+  totalFees: number;
+  tradeCount: number;
+}
+
+export interface LedgerEntry {
+  id: string;
+  type: 'DEPOSIT' | 'WITHDRAWAL' | 'TRADE_OPEN' | 'TRADE_CLOSE';
+  amount: number;
+  balanceAfter: number;
+  symbol: string | null;
+  positionId: string | null;
+  description: string;
+  createdAt: string;
+}
+
+export interface LedgerPage {
+  entries: LedgerEntry[];
+  total: number;
+  balance: number;
+}
+
+export async function fetchBalanceStats(): Promise<BalanceStats> {
+  const { data } = await api.get('/balance');
+  return data;
+}
+
+export async function fetchLedger(limit = 50, offset = 0): Promise<LedgerPage> {
+  const { data } = await api.get('/balance/ledger', { params: { limit, offset } });
+  return data;
+}
+
+export async function depositBalance(amount: number, description?: string): Promise<LedgerEntry> {
+  const { data } = await api.post('/balance/deposit', { amount, description });
+  return data;
+}
+
+export async function withdrawBalance(amount: number, description?: string): Promise<LedgerEntry> {
+  const { data } = await api.post('/balance/withdraw', { amount, description });
+  return data;
+}
+
 export async function botStart() { return api.post('/bot/start'); }
 export async function botStop() { return api.post('/bot/stop'); }
 export async function botPause() { return api.post('/bot/pause'); }

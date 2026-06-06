@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Put, Param, Body, Query, HttpException, HttpStatus } from '@nestjs/common';
+import { Controller, Get, Post, Put, Param, Body, Query, HttpException, HttpStatus, ParseIntPipe, DefaultValuePipe } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PositionEngineService } from './position-engine/position-engine.service';
@@ -10,6 +10,7 @@ import { MomentumRankerService } from './momentum-ranker/momentum-ranker.service
 import { PortfolioManagerService } from './portfolio-manager/portfolio-manager.service';
 import { PrismaService } from './prisma/prisma.service';
 import { BotLogService } from './bot-log/bot-log.service';
+import { BalanceService } from './balance/balance.service';
 
 @Controller()
 @ApiTags('Trading Platform')
@@ -24,6 +25,7 @@ export class AppController {
     private readonly portfolio: PortfolioManagerService,
     private readonly prisma: PrismaService,
     private readonly botLog: BotLogService,
+    private readonly balanceService: BalanceService,
     private readonly events: EventEmitter2,
   ) {}
 
@@ -55,22 +57,31 @@ export class AppController {
     }, 0);
     const equity = balance + unrealizedPnl;
 
-    const today = new Date(); today.setHours(0,0,0,0);
-    const todayStats = await this.prisma.performanceStat.findUnique({ where: { date: today } });
+    const today = new Date(); today.setUTCHours(0, 0, 0, 0);
     const weekAgo = new Date(Date.now() - 7*24*60*60*1000);
-    const weekStats = await this.prisma.performanceStat.findMany({ where: { date: { gte: weekAgo } } });
     const monthAgo = new Date(Date.now() - 30*24*60*60*1000);
-    const monthStats = await this.prisma.performanceStat.findMany({ where: { date: { gte: monthAgo } } });
+
+    const [todayTrades, weekTrades, monthTrades] = await Promise.all([
+      this.prisma.tradeHistory.findMany({ where: { exitTime: { gte: today } }, select: { pnl: true, fees: true } }),
+      this.prisma.tradeHistory.findMany({ where: { exitTime: { gte: weekAgo } }, select: { pnl: true, fees: true } }),
+      this.prisma.tradeHistory.findMany({ where: { exitTime: { gte: monthAgo } }, select: { pnl: true, fees: true } }),
+    ]);
+
+    const netPnl = (trades: { pnl: number; fees: number }[]) =>
+      trades.reduce((s, t) => s + t.pnl - t.fees, 0);
+
+    const freeMargin = balance - investedBalance;
     const tickers = this.getStoredTokenList().filter(t => t.price > 0).slice(0, 20);
 
     return {
       balance,
       investedBalance,
+      freeMargin,
       equity,
       unrealizedPnl,
-      dailyPnl: todayStats?.dailyPnl ?? riskStats.dailyPnl,
-      weeklyPnl: weekStats.reduce((s, d) => s + d.dailyPnl, 0),
-      monthlyPnl: monthStats.reduce((s, d) => s + d.dailyPnl, 0),
+      dailyPnl: netPnl(todayTrades),
+      weeklyPnl: netPnl(weekTrades),
+      monthlyPnl: netPnl(monthTrades),
       winRate: stats.winRate,
       profitFactor: stats.profitFactor,
       totalTrades: stats.totalTrades,
@@ -277,6 +288,41 @@ export class AppController {
   @Get('market/token-list')
   getMarketTokens() {
     return this.getStoredTokenList();
+  }
+
+  // ─── Balance ──────────────────────────────────────────────────────────────
+
+  @Get('balance')
+  async getBalance() {
+    return this.balanceService.getStats();
+  }
+
+  @Get('balance/ledger')
+  async getBalanceLedger(
+    @Query('limit',  new DefaultValuePipe(50),  ParseIntPipe) limit: number,
+    @Query('offset', new DefaultValuePipe(0),   ParseIntPipe) offset: number,
+  ) {
+    return this.balanceService.getLedger(limit, offset);
+  }
+
+  @Post('balance/deposit')
+  async deposit(@Body() body: { amount: number; description?: string }) {
+    if (!body.amount) throw new HttpException('amount is required', HttpStatus.BAD_REQUEST);
+    try {
+      return await this.balanceService.deposit(body.amount, body.description);
+    } catch (err) {
+      throw new HttpException(err.message, HttpStatus.BAD_REQUEST);
+    }
+  }
+
+  @Post('balance/withdraw')
+  async withdraw(@Body() body: { amount: number; description?: string }) {
+    if (!body.amount) throw new HttpException('amount is required', HttpStatus.BAD_REQUEST);
+    try {
+      return await this.balanceService.withdraw(body.amount, body.description);
+    } catch (err) {
+      throw new HttpException(err.message, HttpStatus.BAD_REQUEST);
+    }
   }
 
   private getStoredTokenList() {

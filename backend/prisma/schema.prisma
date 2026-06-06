@@ -179,6 +179,21 @@ model BotConfig {
   updatedAt           DateTime @updatedAt
 }
 
+model BalanceLedger {
+  id           BigInt   @id @default(autoincrement())
+  type         String   // DEPOSIT | WITHDRAWAL | TRADE_OPEN | TRADE_CLOSE
+  amount       Float    // positive = credit, negative = debit
+  balanceAfter Float
+  symbol       String?
+  positionId   BigInt?
+  description  String
+  createdAt    DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([type, createdAt])
+  @@index([positionId])
+}
+
 model RiskEvent {
   id          BigInt   @id @default(autoincrement())
   type        String

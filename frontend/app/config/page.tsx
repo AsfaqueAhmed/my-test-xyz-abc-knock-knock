@@ -117,11 +117,29 @@ export default function ConfigPage() {
       </div>
 
       <form onSubmit={handleSubmit}>
+        {/* Paper trading toggle */}
+        <div className="card" style={{ marginBottom: 16 }}>
+          <div style={{ fontSize: 12, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 14, paddingBottom: 10, borderBottom: '1px solid var(--border)' }}>
+            Trading Mode
+          </div>
+          <Toggle
+            label="Paper Trading"
+            name="paperTrading"
+            value={!!form.paperTrading}
+            onChange={handleChange}
+            hint="When enabled, no real orders are placed on Binance. All trades are simulated."
+          />
+          {!form.paperTrading && (
+            <div style={{ marginTop: 12, padding: 12, background: 'rgba(255,71,87,0.1)', border: '1px solid rgba(255,71,87,0.3)', borderRadius: 6, fontSize: 12, color: 'var(--red)' }}>
+              ⚠ Live trading will place REAL orders on Binance. Ensure your API keys are configured and you understand the risks.
+            </div>
+          )}
+        </div>
+
         <Section title="Position Sizing">
           <Field label="Max Active Positions" name="maxActivePositions" value={form.maxActivePositions ?? ''} onChange={handleChange} min={1} max={20} step={1} hint="Max simultaneous open positions" />
           <Field label="Max Entries Per Symbol" name="maxEntriesPerSymbol" value={form.maxEntriesPerSymbol ?? ''} onChange={handleChange} min={1} max={10} step={1} hint="Max pyramid entries per symbol" />
           <Field label="Capital Per Entry ($)" name="maxCapitalPerEntry" value={form.maxCapitalPerEntry ?? ''} onChange={handleChange} min={10} step={10} hint="USDT allocated per entry" />
-          <Field label="Initial Balance ($)" name="initialBalance" value={form.initialBalance ?? ''} onChange={handleChange} min={100} step={100} hint="Starting paper balance" />
           <Field label="Leverage (x)" name="leverage" value={form.leverage ?? ''} onChange={handleChange} min={1} max={125} step={1} hint="Futures leverage multiplier" />
         </Section>
 
@@ -197,7 +215,7 @@ export default function ConfigPage() {
 
         <Section title="Risk Management">
           <Field label="Max Daily Drawdown %" name="maxDailyDrawdownPct" value={form.maxDailyDrawdownPct ?? ''} onChange={handleChange} min={0.5} max={50} step={0.5} hint="Halt trading if daily loss exceeds this" />
-          <Field label="Max Exposure %" name="maxExposurePct" value={form.maxExposurePct ?? ''} onChange={handleChange} min={10} max={100} step={5} hint="Max % of balance in open positions" />
+          <Field label="Max Exposure %" name="maxExposurePct" value={form.maxExposurePct ?? ''} onChange={handleChange} min={10} step={5} hint="Max notional exposure as % of current balance" />
         </Section>
 
         <Section title="Cooldown Rules">
@@ -218,31 +236,6 @@ export default function ConfigPage() {
           <Field label="Price History (hrs)" name="priceHistoryHours" value={form.priceHistoryHours ?? ''} onChange={handleChange} min={1} max={24} step={1} hint="Rolling price history window kept in memory" />
           <Field label="Top Candidates" name="topCandidatesCount" value={form.topCandidatesCount ?? ''} onChange={handleChange} min={1} max={50} step={1} hint="Candidates passed to deep analysis per scan" />
         </Section>
-
-        {/* Paper trading toggle */}
-        <div className="card">
-          <div style={{ fontSize: 12, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 14, paddingBottom: 10, borderBottom: '1px solid var(--border)' }}>
-            Trading Mode
-          </div>
-          <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontWeight: 600, marginBottom: 4 }}>Paper Trading</div>
-              <div style={{ fontSize: 12, color: 'var(--text3)' }}>
-                When enabled, no real orders are placed on Binance. All trades are simulated.
-              </div>
-            </div>
-            <div>
-              <span className={form.paperTrading ? 'badge-green' : 'badge-red'} style={{ fontSize: 14, padding: '6px 16px' }}>
-                {form.paperTrading ? 'PAPER MODE ✓' : 'LIVE MODE ⚠'}
-              </span>
-            </div>
-          </div>
-          {!form.paperTrading && (
-            <div style={{ marginTop: 12, padding: 12, background: 'rgba(255,71,87,0.1)', border: '1px solid rgba(255,71,87,0.3)', borderRadius: 6, fontSize: 12, color: 'var(--red)' }}>
-              ⚠ Live trading will place REAL orders on Binance. Ensure your API keys are configured and you understand the risks.
-            </div>
-          )}
-        </div>
       </form>
     </div>
   );

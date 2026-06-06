@@ -6,7 +6,6 @@ export interface BotConfiguration {
   maxActivePositions: number;
   maxEntriesPerSymbol: number;
   maxCapitalPerEntry: number;
-  initialBalance: number;
   leverage: number;
 
   // Position management
@@ -67,7 +66,6 @@ const DEFAULTS: BotConfiguration = {
   maxActivePositions: 5,
   maxEntriesPerSymbol: 3,
   maxCapitalPerEntry: 1000,
-  initialBalance: 10000,
   leverage: 5,
   activationPct: 5,
   trailingPct: 3,
@@ -98,7 +96,9 @@ const DEFAULTS: BotConfiguration = {
   falseAlarmMultiplier: 2,
   falseAlarmMaxCooldown: 1600,
   maxDailyDrawdownPct: 5,
-  maxExposurePct: 80,
+  // Notional exposure limit as % of current balance. With 5x leverage and $1000/entry,
+  // each position = $5000 notional. 150% of balance → max ~3 concurrent $1000 entries on a $10k balance.
+  maxExposurePct: 150,
   cooldownEntries: 3,
   cooldownWindowMin: 10,
   cooldownDurationMin: 5,
@@ -135,7 +135,6 @@ export class BotConfigService implements OnModuleInit {
         maxActivePositions: num('maxActivePositions', DEFAULTS.maxActivePositions),
         maxEntriesPerSymbol: num('maxEntriesPerSymbol', DEFAULTS.maxEntriesPerSymbol),
         maxCapitalPerEntry: num('maxCapitalPerEntry', DEFAULTS.maxCapitalPerEntry),
-        initialBalance: num('initialBalance', DEFAULTS.initialBalance),
         leverage: num('leverage', DEFAULTS.leverage),
         activationPct: num('activationPct', DEFAULTS.activationPct),
         trailingPct: num('trailingPct', DEFAULTS.trailingPct),

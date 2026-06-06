@@ -6,6 +6,7 @@ import { fetchDashboard } from '../../lib/api';
 
 const navItems = [
   { href: '/', label: 'Dashboard', icon: '⬡' },
+  { href: '/balance', label: 'Balance', icon: '$' },
   { href: '/market', label: 'Market', icon: '◫' },
   { href: '/positions', label: 'Positions', icon: '◈' },
   { href: '/signals', label: 'Signals', icon: '⚡' },

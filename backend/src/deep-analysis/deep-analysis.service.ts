@@ -218,7 +218,9 @@ export class DeepAnalysisService {
     }
 
     // ── Minimum pass thresholds ─────────────────────────────────────────────
+    // trendScore === 0 means EMA structure is fully against the direction — hard block.
     const passed =
+      trendScore > 0 &&
       (!cfg.requireVolumeGate || volumeRatio >= 1.3) &&
       breakoutConfirmed &&
       atrPct <= 5 &&

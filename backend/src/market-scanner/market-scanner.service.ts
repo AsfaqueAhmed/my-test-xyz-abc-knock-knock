@@ -169,8 +169,10 @@ export class MarketScannerService implements OnModuleInit, OnModuleDestroy {
 
   restartTimers() {
     if (this.scanTimer) clearInterval(this.scanTimer);
+    if (this.cleanupTimer) clearInterval(this.cleanupTimer);
     this.startScanTimer();
-    this.logger.log('Scanner timer restarted with updated config');
+    this.startCleanupTimer();
+    this.logger.log('Scanner timers restarted with updated config');
   }
 
   private async fetchAndSnapshot() {

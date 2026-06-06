@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { BotConfigService } from '../config/bot-config.service';
+import { BalanceService } from '../balance/balance.service';
 
 export interface RiskCheck {
   allowed: boolean;
@@ -21,6 +22,7 @@ export class RiskEngineService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly botConfig: BotConfigService,
+    private readonly balanceService: BalanceService,
   ) {}
 
   // Returns the ms timestamp of today's UTC midnight — stable, locale-independent.
@@ -53,7 +55,8 @@ export class RiskEngineService {
 
     // Daily drawdown check
     if (this.dailyPnl < 0) {
-      const drawdownPct = Math.abs(this.dailyPnl) / config.initialBalance * 100;
+      const balance = this.balanceService.getBalance();
+      const drawdownPct = balance > 0 ? Math.abs(this.dailyPnl) / balance * 100 : 0;
       if (drawdownPct >= config.maxDailyDrawdownPct) {
         await this.logRiskEvent('DAILY_DRAWDOWN', `Daily drawdown ${drawdownPct.toFixed(2)}% exceeds limit`, 'HIGH');
         return { allowed: false, reason: `Daily drawdown limit reached (${drawdownPct.toFixed(2)}%)` };
@@ -70,11 +73,12 @@ export class RiskEngineService {
     }
 
     const exposure = await this.getCurrentExposure();
-    const maxExposure = config.initialBalance * (config.maxExposurePct / 100);
-    if (exposure + capital > maxExposure) {
+    const newNotional = capital * config.leverage;
+    const maxExposure = this.balanceService.getBalance() * (config.maxExposurePct / 100);
+    if (exposure + newNotional > maxExposure) {
       return {
         allowed: false,
-        reason: `Max exposure exceeded ($${(exposure + capital).toFixed(2)}/$${maxExposure.toFixed(2)})`,
+        reason: `Max notional exposure exceeded ($${(exposure + newNotional).toFixed(2)}/$${maxExposure.toFixed(2)})`,
       };
     }
 
@@ -140,15 +144,16 @@ export class RiskEngineService {
     }
   }
 
+  // Returns total notional value of all open positions (avgEntryPrice × quantity).
+  // quantity is already the leveraged size, so this correctly reflects actual market exposure.
   private async getCurrentExposure(): Promise<number> {
     const openPositions = await this.prisma.position.findMany({
       where: { status: { in: ['OPEN_LONG', 'LONG_TRAILING', 'OPEN_SHORT', 'SHORT_TRAILING'] } },
-      select: { avgEntryPrice: true, quantity: true, leverage: true },
+      select: { avgEntryPrice: true, quantity: true },
     });
 
     return openPositions.reduce((sum, p) => {
-      const leverage = p.leverage || 1;
-      return sum + (Number(p.avgEntryPrice) * Number(p.quantity)) / leverage;
+      return sum + Number(p.avgEntryPrice) * Number(p.quantity);
     }, 0);
   }
 

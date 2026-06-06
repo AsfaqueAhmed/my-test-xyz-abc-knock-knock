@@ -43,7 +43,7 @@ export default function DashboardPage() {
 
       {/* Top metrics */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 12, marginBottom: 24 }}>
-        <StatCard label="Available" value={`$${(data.balance || 0).toFixed(2)}`} sub="Free capital" />
+        <StatCard label="Free Margin" value={`$${(data.freeMargin ?? data.balance ?? 0).toFixed(2)}`} sub="Equity minus invested" />
         <StatCard label="Invested" value={`$${(data.investedBalance || 0).toFixed(2)}`} sub={`${data.openPositionsCount || 0} position${data.openPositionsCount === 1 ? '' : 's'}`} color="var(--yellow)" />
         <StatCard label="Equity" value={`$${(data.equity || 0).toFixed(2)}`} sub={`Unrealized: $${(data.unrealizedPnl || 0).toFixed(2)}`} color={data.unrealizedPnl >= 0 ? 'var(--green)' : 'var(--red)'} />
         <PnlCard label="Daily PnL" value={data.dailyPnl || 0} />
