@@ -55,6 +55,7 @@ export interface BotConfiguration {
 
   requireVolumeGate: boolean;
   replacementEnabled: boolean;
+  exposureCheckEnabled: boolean;
 
   paperTrading: boolean;
   tradingEnabled: boolean;
@@ -104,6 +105,7 @@ const DEFAULTS: BotConfiguration = {
   cooldownDurationMin: 5,
   requireVolumeGate: true,
   replacementEnabled: true,
+  exposureCheckEnabled: true,
 
   paperTrading: true,
   tradingEnabled: false,
@@ -171,6 +173,7 @@ export class BotConfigService implements OnModuleInit {
         cooldownDurationMin: num('cooldownDurationMin', DEFAULTS.cooldownDurationMin),
         requireVolumeGate: bool('requireVolumeGate', DEFAULTS.requireVolumeGate),
         replacementEnabled: bool('replacementEnabled', DEFAULTS.replacementEnabled),
+        exposureCheckEnabled: bool('exposureCheckEnabled', DEFAULTS.exposureCheckEnabled),
 
         paperTrading: bool('paperTrading', DEFAULTS.paperTrading),
         tradingEnabled: bool('tradingEnabled', DEFAULTS.tradingEnabled),
