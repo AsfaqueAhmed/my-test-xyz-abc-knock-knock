@@ -162,6 +162,19 @@ export class BotLogService {
     void this.write('WARN', 'RISK', 'COOLDOWN_ACTIVATED', `Cooldown on ${symbol}: ${reason}`, symbol, { reason });
   }
 
+  // ─── Public write API ────────────────────────────────────────────────────
+
+  log(
+    level: Level,
+    category: Category,
+    event: string,
+    message: string,
+    symbol?: string,
+    metadata?: Record<string, unknown>,
+  ) {
+    void this.write(level, category, event, message, symbol, metadata);
+  }
+
   // ─── Public query API (used by controller) ────────────────────────────────
 
   async getLogs(opts: {

@@ -1,6 +1,7 @@
 'use client';
 import { useQuery } from '@tanstack/react-query';
 import { fetchTrades } from '../../lib/api';
+import { SymbolLink } from '../components/SymbolLink';
 import { useState } from 'react';
 
 type Period = 'today' | 'week' | 'month' | 'all';
@@ -97,7 +98,7 @@ export default function TradesPage() {
                     const pnlColor = t.pnl >= 0 ? 'var(--green)' : 'var(--red)';
                     return (
                       <tr key={t.id}>
-                        <td style={{ fontWeight: 700 }}>{t.symbol}</td>
+                        <td><SymbolLink symbol={t.symbol} style={{ fontWeight: 700 }}>{t.symbol}</SymbolLink></td>
                         <td>
                           {t.side === 'LONG'
                             ? <span className="badge-green">▲ LONG</span>
@@ -133,7 +134,7 @@ export default function TradesPage() {
                   {/* Header: symbol + side + exit reason */}
                   <div className="m-row">
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <span style={{ fontWeight: 700, fontSize: 14 }}>{t.symbol}</span>
+                      <SymbolLink symbol={t.symbol} style={{ fontWeight: 700, fontSize: 14 }}>{t.symbol}</SymbolLink>
                       {t.side === 'LONG'
                         ? <span className="badge-green">▲ LONG</span>
                         : <span className="badge-red">▼ SHORT</span>}

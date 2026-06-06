@@ -8,6 +8,7 @@ import { MomentumRankerService, RankedCandidate } from '../momentum-ranker/momen
 import { DeepAnalysisService } from '../deep-analysis/deep-analysis.service';
 import { TradeValidatorService, TradeValidationResult } from '../trade-validator/trade-validator.service';
 import { PositionEngineService } from '../position-engine/position-engine.service';
+import { BotLogService } from '../bot-log/bot-log.service';
 
 export interface PositionStrengthScore {
   positionId: string;
@@ -34,6 +35,7 @@ export class PortfolioManagerService implements OnModuleInit {
 
   // Latest candidate scores from this turn
   private lastCandidates: TradeValidationResult[] = [];
+  private lastCandidatesAt: Date | null = null;
   private lastValidationByPositionSide: Map<string, TradeValidationResult> = new Map();
 
   private botRunning = false;
@@ -48,6 +50,7 @@ export class PortfolioManagerService implements OnModuleInit {
     private readonly validator: TradeValidatorService,
     private readonly positionEngine: PositionEngineService,
     private readonly events: EventEmitter2,
+    private readonly botLog: BotLogService,
   ) {}
 
   // ─── Lifecycle ────────────────────────────────────────────────────────────
@@ -98,7 +101,14 @@ export class PortfolioManagerService implements OnModuleInit {
     topBearish: RankedCandidate[];
   }) {
     const cfg = this.config.get();
-    if (!this.botRunning || this.botPaused || !cfg.tradingEnabled) return;
+    if (!this.botRunning || this.botPaused || !cfg.tradingEnabled) {
+      const reason = !this.botRunning ? 'bot stopped' : this.botPaused ? 'bot paused' : 'trading disabled';
+      const passing = [...topBullish, ...topBearish].length;
+      if (passing > 0) {
+        this.botLog.log('WARN', 'BOT', 'SIGNAL_BLOCKED', `Scan turn ${turn}: ${passing} candidates skipped — ${reason}`, undefined, { reason, turn });
+      }
+      return;
+    }
 
     // Score all open positions first
     await this.scoreOpenPositions();
@@ -136,6 +146,7 @@ export class PortfolioManagerService implements OnModuleInit {
     }
 
     this.lastCandidates = allValidations.sort((a, b) => b.tradeScore - a.tradeScore);
+    this.lastCandidatesAt = new Date();
     await this.persistCandidateScores(this.lastCandidates);
 
     await this.allocateCapital(passingCandidates, turn);
@@ -255,6 +266,7 @@ export class PortfolioManagerService implements OnModuleInit {
 
       if (!cfg.replacementEnabled) {
         this.logger.debug(`No slot for ${candidate.symbol} — replacement disabled`);
+        this.botLog.log('WARN', 'BOT', 'SIGNAL_BLOCKED', `${candidate.symbol} passed (${candidate.tradeScore.toFixed(1)}) — slots full, replacement disabled`, candidate.symbol, { tradeScore: candidate.tradeScore, direction: candidate.direction });
         continue;
       }
 
@@ -265,6 +277,7 @@ export class PortfolioManagerService implements OnModuleInit {
       const weakest = this.findWeakestReplaceablePosition();
       if (!weakest) {
         this.logger.debug(`No capital for ${candidate.symbol} — all positions protected`);
+        this.botLog.log('WARN', 'BOT', 'SIGNAL_BLOCKED', `${candidate.symbol} passed (${candidate.tradeScore.toFixed(1)}) — all positions protected, cannot replace`, candidate.symbol, { tradeScore: candidate.tradeScore, direction: candidate.direction });
         continue;
       }
 
@@ -276,6 +289,17 @@ export class PortfolioManagerService implements OnModuleInit {
         `${weakest.symbol}(${weakest.score.toFixed(1)}) = ${opportunityScore.toFixed(1)}`
       );
 
+      if (!(candidateScore > weakest.score && opportunityScore >= cfg.replacementThreshold)) {
+        const blockReason = candidateScore <= weakest.score
+          ? `Score ${candidateScore.toFixed(1)} ≤ weakest position ${weakest.symbol} (${weakest.score.toFixed(1)})`
+          : `Opportunity gap +${opportunityScore.toFixed(1)} < threshold +${cfg.replacementThreshold}`;
+        this.botLog.log('WARN', 'BOT', 'SIGNAL_BLOCKED',
+          `${candidate.symbol} passed (${candidateScore.toFixed(1)}) — replacement rejected: ${blockReason}`,
+          candidate.symbol,
+          { tradeScore: candidateScore, direction: candidate.direction, weakestSymbol: weakest.symbol, weakestScore: weakest.score, opportunityScore, threshold: cfg.replacementThreshold },
+        );
+        continue;
+      }
       if (
         candidateScore > weakest.score &&
         opportunityScore >= cfg.replacementThreshold
@@ -371,7 +395,7 @@ export class PortfolioManagerService implements OnModuleInit {
     return Array.from(this.positionScores.values());
   }
 
-  getLastCandidates(): TradeValidationResult[] {
-    return [...this.lastCandidates];
+  getLastCandidates(): { candidates: TradeValidationResult[]; scannedAt: Date | null } {
+    return { candidates: [...this.lastCandidates], scannedAt: this.lastCandidatesAt };
   }
 }

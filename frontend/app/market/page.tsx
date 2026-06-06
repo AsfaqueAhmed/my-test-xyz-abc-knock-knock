@@ -2,6 +2,7 @@
 import { useState, useMemo, useEffect, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { fetchMarketTokens, checkManualTrade, manualTrade, type MarketToken, type ManualTradeCheck } from '../../lib/api';
+import { SymbolLink } from '../components/SymbolLink';
 
 // Show the natural precision of a price without hard decimal caps.
 // Uses 8 significant figures, strips trailing zeros, and avoids scientific notation.
@@ -24,11 +25,32 @@ type SortDir = 'asc' | 'desc';
 const TIMEFRAME_COLS: { key: keyof MarketToken; label: string }[] = [
   { key: 'change30s', label: '30s' },
   { key: 'change1m', label: '1m' },
+  { key: 'change2m', label: '2m' },
   { key: 'change5m', label: '5m' },
   { key: 'change10m', label: '10m' },
   { key: 'change15m', label: '15m' },
   { key: 'change30m', label: '30m' },
   { key: 'change24h', label: '24h' },
+];
+
+const MOBILE_TF: { key: keyof MarketToken; label: string }[] = [
+  { key: 'change30s', label: '30s' },
+  { key: 'change1m', label: '1m' },
+  { key: 'change2m', label: '2m' },
+  { key: 'change5m', label: '5m' },
+  { key: 'change10m', label: '10m' },
+  { key: 'change24h', label: '24h' },
+];
+
+const MOBILE_SORT_OPTIONS: { key: SortKey; label: string }[] = [
+  { key: 'change30s', label: '30s' },
+  { key: 'change1m', label: '1m' },
+  { key: 'change2m', label: '2m' },
+  { key: 'change5m', label: '5m' },
+  { key: 'change10m', label: '10m' },
+  { key: 'change24h', label: '24h' },
+  { key: 'volume24h', label: 'Vol' },
+  { key: 'price', label: 'Price' },
 ];
 
 function PctCell({ value }: { value: number }) {
@@ -391,7 +413,7 @@ export default function MarketPage() {
                 <tbody>
                   {sorted.length === 0 && (
                     <tr>
-                      <td colSpan={11} style={{ padding: 32, textAlign: 'center', color: 'var(--text3)', fontSize: 13 }}>
+                      <td colSpan={12} style={{ padding: 32, textAlign: 'center', color: 'var(--text3)', fontSize: 13 }}>
                         No tokens found
                       </td>
                     </tr>
@@ -419,7 +441,7 @@ export default function MarketPage() {
                               {baseSymbol.slice(0, 3)}
                             </div>
                             <div>
-                              <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{token.symbol}</div>
+                              <SymbolLink symbol={token.symbol} style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{token.symbol}</SymbolLink>
                               <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 1 }}>{displayName}</div>
                             </div>
                           </div>
@@ -464,75 +486,120 @@ export default function MarketPage() {
           </div>
 
           {/* Mobile token list */}
-          <div className="mobile-only" style={{ overflowY: 'auto', flex: 1, minHeight: 0 }}>
-            {sorted.length === 0 && (
-              <div className="m-card" style={{ textAlign: 'center', color: 'var(--text3)', padding: 32 }}>No tokens found</div>
-            )}
-            {sorted.map((token) => {
-              const baseSymbol = token.symbol.replace('USDT', '').replace('BUSD', '');
-              const displayName = token.name && token.name !== token.symbol ? token.name : baseSymbol;
-              const MOBILE_TF: (keyof MarketToken)[] = ['change1m', 'change5m', 'change15m', 'change24h'];
-              const MOBILE_TF_LABELS: Record<string, string> = { change1m: '1m', change5m: '5m', change15m: '15m', change24h: '24h' };
-              return (
-                <div key={token.symbol} className="m-card">
-                  {/* Row 1: icon + symbol/name + price + trade */}
-                  <div className="m-row">
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                      <div style={{
-                        width: 34, height: 34, borderRadius: 6, background: 'var(--bg3)',
-                        border: '1px solid var(--border)', display: 'flex', alignItems: 'center',
-                        justifyContent: 'center', fontSize: 10, fontWeight: 700, color: 'var(--blue)',
-                        flexShrink: 0, letterSpacing: '-0.02em',
-                      }}>
-                        {baseSymbol.slice(0, 3)}
-                      </div>
-                      <div>
-                        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>{token.symbol}</div>
-                        <div style={{ fontSize: 11, color: 'var(--text3)' }}>{displayName}</div>
-                      </div>
-                    </div>
-                    <div style={{ textAlign: 'right' }}>
-                      <div style={{ fontSize: 14, fontWeight: 700 }}>${fmtPrice(token.price)}</div>
-                      <div style={{ fontSize: 10, color: 'var(--text3)', marginTop: 2 }}>
-                        {token.volume24h > 1_000_000_000
-                          ? `$${(token.volume24h / 1_000_000_000).toFixed(1)}B`
-                          : token.volume24h > 1_000_000
-                          ? `$${(token.volume24h / 1_000_000).toFixed(0)}M`
-                          : '—'}
-                      </div>
-                    </div>
-                  </div>
-                  {/* Row 2: timeframe badges + trade button */}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 10, flexWrap: 'wrap' }}>
-                    {MOBILE_TF.map(key => {
-                      const v = (token[key] as number) ?? 0;
-                      const pos = v > 0;
-                      const neg = v < 0;
-                      const color = pos ? 'var(--green)' : neg ? 'var(--red)' : 'var(--text3)';
-                      const bg = pos ? 'rgba(0,214,143,0.08)' : neg ? 'rgba(255,71,87,0.08)' : 'transparent';
-                      return (
-                        <span key={String(key)} style={{
-                          fontSize: 11, fontWeight: 600, padding: '3px 7px', borderRadius: 4,
-                          background: bg, color,
+          <div className="mobile-only" style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+            {/* Mobile sort bar */}
+            <div style={{
+              flexShrink: 0, display: 'flex', gap: 6, overflowX: 'auto', padding: '8px 0 8px',
+              scrollbarWidth: 'none', msOverflowStyle: 'none',
+            }}>
+              {MOBILE_SORT_OPTIONS.map(opt => {
+                const active = sortKey === opt.key;
+                return (
+                  <button
+                    key={String(opt.key)}
+                    onClick={() => handleSort(opt.key)}
+                    style={{
+                      flexShrink: 0, fontSize: 11, fontWeight: 700, padding: '5px 11px',
+                      borderRadius: 20, cursor: 'pointer', whiteSpace: 'nowrap',
+                      border: `1px solid ${active ? 'var(--blue)' : 'var(--border)'}`,
+                      background: active ? 'rgba(41,182,246,0.15)' : 'var(--bg3)',
+                      color: active ? 'var(--blue)' : 'var(--text3)',
+                      transition: 'all 0.15s',
+                    }}
+                  >
+                    {opt.label}{active ? (sortDir === 'asc' ? ' ↑' : ' ↓') : ''}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Token cards */}
+            <div style={{ overflowY: 'auto', flex: 1, minHeight: 0 }}>
+              {sorted.length === 0 && (
+                <div className="m-card" style={{ textAlign: 'center', color: 'var(--text3)', padding: 32 }}>No tokens found</div>
+              )}
+              {sorted.map((token) => {
+                const baseSymbol = token.symbol.replace('USDT', '').replace('BUSD', '');
+                const displayName = token.name && token.name !== token.symbol ? token.name : baseSymbol;
+                return (
+                  <div key={token.symbol} className="m-card">
+                    {/* Row 1: icon + symbol/name + price + trade */}
+                    <div className="m-row">
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <div style={{
+                          width: 34, height: 34, borderRadius: 6, background: 'var(--bg3)',
+                          border: '1px solid var(--border)', display: 'flex', alignItems: 'center',
+                          justifyContent: 'center', fontSize: 10, fontWeight: 700, color: 'var(--blue)',
+                          flexShrink: 0, letterSpacing: '-0.02em',
                         }}>
-                          {MOBILE_TF_LABELS[String(key)]} {pos ? '+' : ''}{v.toFixed(2)}%
-                        </span>
-                      );
-                    })}
-                    <button
-                      onClick={() => setTradeToken(token)}
-                      style={{
-                        marginLeft: 'auto', fontSize: 11, fontWeight: 700, padding: '4px 12px', borderRadius: 6,
-                        cursor: 'pointer', border: '1px solid var(--blue)', background: 'rgba(41,182,246,0.1)',
-                        color: 'var(--blue)', flexShrink: 0,
-                      }}
-                    >
-                      Trade
-                    </button>
+                          {baseSymbol.slice(0, 3)}
+                        </div>
+                        <div>
+                          <SymbolLink symbol={token.symbol} style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>{token.symbol}</SymbolLink>
+                          <div style={{ fontSize: 11, color: 'var(--text3)' }}>{displayName}</div>
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <div style={{ textAlign: 'right' }}>
+                          <div style={{ fontSize: 14, fontWeight: 700 }}>${fmtPrice(token.price)}</div>
+                          <div style={{ fontSize: 10, color: 'var(--text3)', marginTop: 2 }}>
+                            {token.volume24h > 1_000_000_000
+                              ? `$${(token.volume24h / 1_000_000_000).toFixed(1)}B`
+                              : token.volume24h > 1_000_000
+                              ? `$${(token.volume24h / 1_000_000).toFixed(0)}M`
+                              : '—'}
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => setTradeToken(token)}
+                          style={{
+                            fontSize: 11, fontWeight: 700, padding: '5px 12px', borderRadius: 6,
+                            cursor: 'pointer', border: '1px solid var(--blue)', background: 'rgba(41,182,246,0.1)',
+                            color: 'var(--blue)', flexShrink: 0,
+                          }}
+                        >
+                          Trade
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Timeframe grid: row of labels + row of values */}
+                    <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: `repeat(${MOBILE_TF.length}, 1fr)`, gap: '2px 0' }}>
+                      {/* Label row */}
+                      {MOBILE_TF.map(col => (
+                        <div key={`lbl-${String(col.key)}`} style={{
+                          fontSize: 9, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em',
+                          color: sortKey === col.key ? 'var(--blue)' : 'var(--text3)',
+                          textAlign: 'center',
+                        }}>
+                          {col.label}
+                        </div>
+                      ))}
+                      {/* Value row */}
+                      {MOBILE_TF.map(col => {
+                        const v = (token[col.key] as number) ?? 0;
+                        const pos = v > 0;
+                        const neg = v < 0;
+                        const color = pos ? 'var(--green)' : neg ? 'var(--red)' : 'var(--text3)';
+                        const isActive = sortKey === col.key;
+                        return (
+                          <div key={`val-${String(col.key)}`} style={{
+                            fontSize: 11, fontWeight: 700, textAlign: 'center',
+                            color,
+                            background: isActive ? (pos ? 'rgba(0,214,143,0.08)' : neg ? 'rgba(255,71,87,0.08)' : 'rgba(255,255,255,0.04)') : 'transparent',
+                            borderRadius: 3, padding: '2px 0',
+                          }}>
+                            {pos ? '+' : ''}{v.toFixed(2)}%
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
-                </div>
-              );
-            })}
+                );
+              })}
+            </div>
+          </div>
           </div>
         </>
       )}

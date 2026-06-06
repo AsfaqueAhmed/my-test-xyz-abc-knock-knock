@@ -1,6 +1,7 @@
 'use client';
 import { useState, useEffect, useCallback } from 'react';
 import { Sidebar } from './Sidebar';
+import { ChartDrawer } from './ChartDrawer';
 
 export function ClientLayout({ children }: { children: React.ReactNode }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -110,6 +111,7 @@ export function ClientLayout({ children }: { children: React.ReactNode }) {
           {children}
         </div>
       </main>
+      <ChartDrawer />
     </div>
   );
 }

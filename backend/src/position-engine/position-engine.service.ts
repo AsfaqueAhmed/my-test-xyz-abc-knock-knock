@@ -9,6 +9,7 @@ import { BotConfigService } from '../config/bot-config.service';
 import { DeepAnalysisService } from '../deep-analysis/deep-analysis.service';
 import { BalanceService } from '../balance/balance.service';
 import { TradeValidationResult } from '../trade-validator/trade-validator.service';
+import { BotLogService } from '../bot-log/bot-log.service';
 
 const FEE_RATE = 0.0004;
 
@@ -25,6 +26,7 @@ export class PositionEngineService implements OnModuleInit {
     private readonly deepAnalysis: DeepAnalysisService,
     private readonly balanceService: BalanceService,
     private readonly events: EventEmitter2,
+    private readonly botLog: BotLogService,
   ) {}
 
   async onModuleInit() {
@@ -94,19 +96,38 @@ export class PositionEngineService implements OnModuleInit {
       where: { symbol, side, status: { in: ['OPEN_LONG','LONG_TRAILING','OPEN_SHORT','SHORT_TRAILING'] } },
     });
 
-    const riskCheck = await this.risk.checkRisk(symbol, side, cfg.maxCapitalPerEntry, {
+    // Use the same capital cap that openNew/pyramid will actually use,
+    // so the notional exposure check isn't inflated by a balance-capped trade.
+    const balance = this.balanceService.getBalance();
+    const effectiveCapital = Math.min(cfg.maxCapitalPerEntry, balance * 0.1);
+    const riskCheck = await this.risk.checkRisk(symbol, side, effectiveCapital, {
       ignorePositionLimit: !!existing || !!opts.ignorePositionLimit,
     });
-    if (!riskCheck.allowed) { this.logger.debug(`Risk denied ${symbol}: ${riskCheck.reason}`); return false; }
+    if (!riskCheck.allowed) {
+      this.logger.debug(`Risk denied ${symbol}: ${riskCheck.reason}`);
+      this.botLog.log('WARN', 'RISK', 'SIGNAL_BLOCKED', `${symbol} ${side} blocked by risk: ${riskCheck.reason}`, symbol, { direction: side, reason: riskCheck.reason });
+      return false;
+    }
 
     const cooldownCheck = await this.risk.checkCooldown(symbol);
-    if (!cooldownCheck.allowed) { this.logger.debug(`Cooldown ${symbol}: ${cooldownCheck.reason}`); return false; }
+    if (!cooldownCheck.allowed) {
+      this.logger.debug(`Cooldown ${symbol}: ${cooldownCheck.reason}`);
+      this.botLog.log('WARN', 'RISK', 'SIGNAL_BLOCKED', `${symbol} ${side} blocked by cooldown: ${cooldownCheck.reason}`, symbol, { direction: side, reason: cooldownCheck.reason });
+      return false;
+    }
+
+    // Use reduced capital if risk check capped it due to exposure headroom
+    const capitalOverride = riskCheck.reducedCapital;
+    if (capitalOverride) {
+      this.logger.log(`Exposure headroom: reducing capital for ${symbol} to $${capitalOverride.toFixed(2)}`);
+      this.botLog.log('INFO', 'RISK', 'CAPITAL_REDUCED', `${symbol} ${side} capital reduced to $${capitalOverride.toFixed(2)} due to exposure headroom`, symbol, { direction: side, reducedCapital: capitalOverride });
+    }
 
     let executed = false;
     if (existing) {
-      executed = await this.pyramid(existing, candidate);
+      executed = await this.pyramid(existing, candidate, capitalOverride);
     } else {
-      executed = await this.openNew(symbol, side, candidate);
+      executed = await this.openNew(symbol, side, candidate, capitalOverride);
     }
 
     if (!executed) return false;
@@ -124,23 +145,30 @@ export class PositionEngineService implements OnModuleInit {
     return true;
   }
 
-  private async openNew(symbol: string, side: 'LONG' | 'SHORT', candidate: TradeValidationResult): Promise<boolean> {
+  private async openNew(symbol: string, side: 'LONG' | 'SHORT', candidate: TradeValidationResult, capitalOverride?: number): Promise<boolean> {
     const cfg = this.config.get();
     const price = this.scanner.getCurrentPrice(symbol);
     if (price <= 0) {
       this.logger.warn(`Cannot open ${symbol} ${side}: price unavailable (${price})`);
+      this.botLog.log('WARN', 'POSITION', 'SIGNAL_BLOCKED', `${symbol} ${side} blocked: price unavailable`, symbol, { direction: side, reason: 'Price unavailable' });
       return false;
     }
 
     const balance = this.balanceService.getBalance();
     if (balance <= 0) {
       this.logger.warn(`Cannot open ${symbol} ${side}: balance is $${balance.toFixed(2)}`);
+      this.botLog.log('WARN', 'POSITION', 'SIGNAL_BLOCKED', `${symbol} ${side} blocked: insufficient balance $${balance.toFixed(2)}`, symbol, { direction: side, reason: `Balance $${balance.toFixed(2)}` });
       return false;
     }
 
-    const capital = Math.min(cfg.maxCapitalPerEntry, balance * 0.1, candidate.maxSafePositionSize);
-    if (capital > balance) {
-      this.logger.warn(`Cannot open ${symbol} ${side}: capital $${capital.toFixed(2)} exceeds balance $${balance.toFixed(2)}`);
+    const capital = Math.min(
+      capitalOverride ?? cfg.maxCapitalPerEntry,
+      cfg.maxCapitalPerEntry,
+      balance * 0.1,
+      candidate.maxSafePositionSize,
+    );
+    if (capital <= 0) {
+      this.logger.warn(`Cannot open ${symbol} ${side}: capital $${capital.toFixed(2)} too low`);
       return false;
     }
     const quantity = (capital * cfg.leverage) / price;
@@ -181,7 +209,7 @@ export class PositionEngineService implements OnModuleInit {
     return true;
   }
 
-  private async pyramid(position: any, candidate: TradeValidationResult): Promise<boolean> {
+  private async pyramid(position: any, candidate: TradeValidationResult, capitalOverride?: number): Promise<boolean> {
     const cfg = this.config.get();
     if (position.entryCount >= cfg.maxEntriesPerSymbol) return false;
 
@@ -206,8 +234,13 @@ export class PositionEngineService implements OnModuleInit {
     const balance = this.balanceService.getBalance();
     if (balance <= 0) return false;
 
-    const capital = Math.min(cfg.maxCapitalPerEntry, balance * 0.1, candidate.maxSafePositionSize);
-    if (capital > balance) return false;
+    const capital = Math.min(
+      capitalOverride ?? cfg.maxCapitalPerEntry,
+      cfg.maxCapitalPerEntry,
+      balance * 0.1,
+      candidate.maxSafePositionSize,
+    );
+    if (capital <= 0) return false;
     const newQty = (capital * cfg.leverage) / price;
     const fee = price * newQty * FEE_RATE;
     const totalQty = position.quantity + newQty;

@@ -6,6 +6,8 @@ import { BalanceService } from '../balance/balance.service';
 export interface RiskCheck {
   allowed: boolean;
   reason?: string;
+  /** When exposure headroom is less than requested capital, this is the reduced capital to use */
+  reducedCapital?: number;
 }
 
 export interface RiskCheckOptions {
@@ -72,13 +74,25 @@ export class RiskEngineService {
       return { allowed: false, reason: `Max active positions reached (${openPositions}/${config.maxActivePositions})` };
     }
 
+    const balance = this.balanceService.getBalance();
     const exposure = await this.getCurrentExposure();
     const newNotional = capital * config.leverage;
-    const maxExposure = this.balanceService.getBalance() * (config.maxExposurePct / 100);
-    if (exposure + newNotional > maxExposure) {
+    const maxExposure = balance * (config.maxExposurePct / 100);
+    if (config.exposureCheckEnabled && exposure + newNotional > maxExposure) {
+      const headroom = maxExposure - exposure;
+      const reducedCapital = headroom / config.leverage;
+      const minReducedCapital = capital * 0.5;
+      if (headroom > 0 && reducedCapital >= minReducedCapital) {
+        return { allowed: true, reducedCapital };
+      }
       return {
         allowed: false,
-        reason: `Max notional exposure exceeded ($${(exposure + newNotional).toFixed(2)}/$${maxExposure.toFixed(2)})`,
+        reason:
+          `Exposure limit: open positions $${exposure.toFixed(2)} + this trade $${newNotional.toFixed(2)} = $${(exposure + newNotional).toFixed(2)} — ` +
+          `limit is $${maxExposure.toFixed(2)} (balance $${balance.toFixed(2)} × ${config.maxExposurePct}%). ` +
+          (headroom > 0
+            ? `Only $${headroom.toFixed(2)} headroom left, need at least 50% of intended capital ($${minReducedCapital.toFixed(2)}).`
+            : `No headroom — existing positions already exceed the limit.`),
       };
     }
 

@@ -23,8 +23,57 @@ export async function closePosition(id: string) {
   return data;
 }
 
-export async function fetchSignals(live = false) {
-  const { data } = await api.get('/signals', { params: { live } });
+export async function fetchCandidates(): Promise<{ candidates: TradeCandidate[]; scannedAt: string | null }> {
+  const { data } = await api.get('/portfolio/candidates');
+  return data;
+}
+
+export interface TradeCandidate {
+  symbol: string;
+  direction: 'LONG' | 'SHORT';
+  tradeScore: number;
+  momentumScore: number;
+  trendScore: number;
+  volumeScore: number;
+  breakoutScore: number;
+  candleScore: number;
+  liquidityScore: number;
+  volumeRatio: number;
+  quoteVolume24h: number;
+  openInterest: number;
+  openInterestNotional: number;
+  maxSafePositionSize: number;
+  passed: boolean;
+  failureReason?: string;
+  reasons: string[];
+}
+
+export interface ExecutionState {
+  botRunning: boolean;
+  botPaused: boolean;
+  tradingEnabled: boolean;
+  balance: number;
+  effectiveCapital: number;
+  openPositions: number;
+  maxPositions: number;
+  slotsAvailable: number;
+  replacementEnabled: boolean;
+  replacementThreshold: number;
+  emergencyStop: boolean;
+  dailyPnl: number;
+  maxDailyDrawdownPct: number;
+  activeCooldowns: { symbol: string; reason: string; endsAt: string }[];
+  blockers: string[];
+  canTrade: boolean;
+}
+
+export async function fetchExecutionState(): Promise<ExecutionState> {
+  const { data } = await api.get('/portfolio/execution-state');
+  return data;
+}
+
+export async function fetchExecCheck(symbol: string, direction: string): Promise<{ blockers: string[]; canTrade: boolean }> {
+  const { data } = await api.get(`/portfolio/exec-check/${symbol}`, { params: { direction } });
   return data;
 }
 
@@ -36,6 +85,32 @@ export async function fetchTrades(period: string = 'week') {
 export async function fetchAnalytics(days = 30) {
   const { data } = await api.get('/analytics', { params: { days } });
   return data;
+}
+
+export interface Candle {
+  openTime: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+  closeTime: number;
+}
+
+export async function fetchCandles(symbol: string, timeframe = '1m', limit = 150): Promise<Candle[]> {
+  const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${timeframe}&limit=${limit}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Binance ${res.status}`);
+  const raw: any[][] = await res.json();
+  return raw.map(k => ({
+    openTime: k[0],
+    open: parseFloat(k[1]),
+    high: parseFloat(k[2]),
+    low: parseFloat(k[3]),
+    close: parseFloat(k[4]),
+    volume: parseFloat(k[5]),
+    closeTime: k[6],
+  }));
 }
 
 export async function fetchRisk() {
@@ -74,6 +149,7 @@ export interface MarketToken {
   price: number;
   change30s: number;
   change1m: number;
+  change2m: number;
   change5m: number;
   change10m: number;
   change15m: number;

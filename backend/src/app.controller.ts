@@ -157,7 +157,93 @@ export class AppController {
 
   @Get('portfolio/candidates')
   getCandidates() {
-    return this.portfolio.getLastCandidates();
+    const { candidates, scannedAt } = this.portfolio.getLastCandidates();
+    return { candidates, scannedAt };
+  }
+
+  @Get('portfolio/exec-check/:symbol')
+  async execCheck(
+    @Param('symbol') symbol: string,
+    @Query('direction') direction = 'LONG',
+  ) {
+    const sym = symbol.toUpperCase();
+    const side = direction.toUpperCase() as 'LONG' | 'SHORT';
+    const cfg = this.botConfig.get();
+    const botStatus = this.portfolio.getStatus();
+    const balance = this.balanceService.getBalance();
+    const blockers: string[] = [];
+
+    if (!botStatus.running) blockers.push('Bot is not running');
+    else if (botStatus.paused) blockers.push('Bot is paused');
+    else if (!cfg.tradingEnabled) blockers.push('Trading disabled');
+
+    if (this.risk.isEmergencyStop()) blockers.push('Emergency stop active');
+
+    const effectiveCapital = Math.min(cfg.maxCapitalPerEntry, balance * 0.1);
+    const riskCheck = await this.risk.checkRisk(sym, side, effectiveCapital);
+    if (!riskCheck.allowed) blockers.push(riskCheck.reason!);
+
+    const cooldown = await this.risk.checkCooldown(sym);
+    if (!cooldown.allowed) blockers.push(cooldown.reason!);
+
+    const price = this.scanner.getCurrentPrice(sym);
+    if (price <= 0) blockers.push(`Price unavailable for ${sym}`);
+
+    if (effectiveCapital <= 0) blockers.push(`Insufficient balance ($${balance.toFixed(2)})`);
+
+    return { symbol: sym, direction: side, blockers, canTrade: blockers.length === 0 };
+  }
+
+  @Get('portfolio/execution-state')
+  async getExecutionState() {
+    const cfg = this.botConfig.get();
+    const botStatus = this.portfolio.getStatus();
+    const balance = this.balanceService.getBalance();
+    const riskStats = await this.risk.getStats();
+    const effectiveCapital = Math.min(cfg.maxCapitalPerEntry, balance * 0.1);
+
+    // Determine what's blocking execution
+    const blockers: string[] = [];
+    if (!botStatus.running) blockers.push('Bot is stopped');
+    else if (botStatus.paused) blockers.push('Bot is paused');
+    else if (!cfg.tradingEnabled) blockers.push('Trading disabled in config');
+
+    if (riskStats.emergencyStop) blockers.push('Emergency stop active');
+    if (riskStats.dailyPnl < 0) {
+      const drawdownPct = balance > 0 ? Math.abs(riskStats.dailyPnl) / balance * 100 : 0;
+      if (drawdownPct >= cfg.maxDailyDrawdownPct)
+        blockers.push(`Daily drawdown limit hit (${drawdownPct.toFixed(2)}% / ${cfg.maxDailyDrawdownPct}%)`);
+    }
+    if (riskStats.openPositions >= cfg.maxActivePositions) {
+      if (!cfg.replacementEnabled)
+        blockers.push(`Slots full (${riskStats.openPositions}/${cfg.maxActivePositions}) — replacement disabled`);
+      else
+        blockers.push(`Slots full (${riskStats.openPositions}/${cfg.maxActivePositions}) — replacement active (threshold +${cfg.replacementThreshold})`);
+    }
+    if (effectiveCapital <= 0) blockers.push(`Insufficient balance ($${balance.toFixed(2)})`);
+
+    return {
+      botRunning: botStatus.running,
+      botPaused: botStatus.paused,
+      tradingEnabled: cfg.tradingEnabled,
+      balance,
+      effectiveCapital,
+      openPositions: riskStats.openPositions,
+      maxPositions: cfg.maxActivePositions,
+      slotsAvailable: Math.max(cfg.maxActivePositions - riskStats.openPositions, 0),
+      replacementEnabled: cfg.replacementEnabled,
+      replacementThreshold: cfg.replacementThreshold,
+      emergencyStop: riskStats.emergencyStop,
+      dailyPnl: riskStats.dailyPnl,
+      maxDailyDrawdownPct: cfg.maxDailyDrawdownPct,
+      activeCooldowns: riskStats.cooldowns.map((c: any) => ({
+        symbol: c.symbol,
+        reason: c.reason,
+        endsAt: c.endsAt,
+      })),
+      blockers,
+      canTrade: blockers.length === 0,
+    };
   }
 
   @Get('analytics')

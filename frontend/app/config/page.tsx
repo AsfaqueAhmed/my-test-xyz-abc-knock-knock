@@ -214,8 +214,17 @@ export default function ConfigPage() {
         </div>
 
         <Section title="Risk Management">
+          <div style={{ gridColumn: '1 / -1', marginBottom: 4 }}>
+            <Toggle
+              label="Exposure Check"
+              name="exposureCheckEnabled"
+              value={!!form.exposureCheckEnabled}
+              onChange={handleChange}
+              hint="Block new trades when total notional exceeds Max Exposure %. Disable to allow trades regardless of current exposure."
+            />
+          </div>
           <Field label="Max Daily Drawdown %" name="maxDailyDrawdownPct" value={form.maxDailyDrawdownPct ?? ''} onChange={handleChange} min={0.5} max={50} step={0.5} hint="Halt trading if daily loss exceeds this" />
-          <Field label="Max Exposure %" name="maxExposurePct" value={form.maxExposurePct ?? ''} onChange={handleChange} min={10} step={5} hint="Max notional exposure as % of current balance" />
+          <Field label="Max Exposure %" name="maxExposurePct" value={form.maxExposurePct ?? ''} onChange={handleChange} min={10} step={5} hint="Max notional exposure as % of current balance (only applies when Exposure Check is on)" />
         </Section>
 
         <Section title="Cooldown Rules">

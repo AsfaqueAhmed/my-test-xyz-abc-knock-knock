@@ -1,6 +1,7 @@
 'use client';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { fetchPositions, closePosition } from '../../lib/api';
+import { SymbolLink } from '../components/SymbolLink';
 import { useState, useMemo } from 'react';
 
 function fmtPrice(price: number): string {
@@ -153,7 +154,7 @@ export default function PositionsPage() {
                     const pnlColor = pnl >= 0 ? 'var(--green)' : 'var(--red)';
                     return (
                       <tr key={p.id}>
-                        <td><span style={{ fontWeight: 700 }}>{p.symbol}</span></td>
+                        <td><SymbolLink symbol={p.symbol} style={{ fontWeight: 700 }}>{p.symbol}</SymbolLink></td>
                         <td style={{ width: 1, whiteSpace: 'nowrap' }}><StatusBadge status={p.status} /></td>
                         <td>${fmtPrice(Number(p.entryPrice))}</td>
                         <td>${fmtPrice(avgEntry)}</td>
@@ -230,7 +231,7 @@ export default function PositionsPage() {
                 <div key={p.id} className="m-card">
                   <div className="m-row">
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <span style={{ fontWeight: 700, fontSize: 15 }}>{p.symbol}</span>
+                      <SymbolLink symbol={p.symbol} style={{ fontWeight: 700, fontSize: 15 }}>{p.symbol}</SymbolLink>
                       <StatusBadge status={p.status} />
                     </div>
                     {isOpen ? (
