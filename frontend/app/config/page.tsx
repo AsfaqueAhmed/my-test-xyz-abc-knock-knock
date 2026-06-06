@@ -21,13 +21,39 @@ function Field({ label, name, value, onChange, type = 'number', min, max, step, 
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Toggle({ label, name, value, onChange, hint }: any) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, padding: '10px 0', borderBottom: '1px solid var(--border)' }}>
+      <div style={{ flex: 1 }}>
+        <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--text)' }}>{label}</div>
+        {hint && <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 3 }}>{hint}</div>}
+      </div>
+      <button
+        type="button"
+        onClick={() => onChange({ target: { name, value: !value, type: 'checkbox', checked: !value } })}
+        style={{
+          width: 44, height: 24, borderRadius: 12, border: 'none', cursor: 'pointer', flexShrink: 0,
+          background: value ? 'var(--green)' : 'var(--border)',
+          position: 'relative', transition: 'background 0.2s',
+        }}
+      >
+        <span style={{
+          position: 'absolute', top: 3, width: 18, height: 18, borderRadius: '50%',
+          background: '#fff', transition: 'left 0.2s',
+          left: value ? 23 : 3,
+        }} />
+      </button>
+    </div>
+  );
+}
+
+function Section({ title, children, cols = 'repeat(auto-fill, minmax(200px, 1fr))' }: { title: string; children: React.ReactNode; cols?: string }) {
   return (
     <div className="card" style={{ marginBottom: 16 }}>
       <div style={{ fontSize: 12, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 16, paddingBottom: 10, borderBottom: '1px solid var(--border)' }}>
         {title}
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 14 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: cols, gap: 14 }}>
         {children}
       </div>
     </div>
@@ -104,10 +130,70 @@ export default function ConfigPage() {
           <Field label="Trailing %" name="trailingPct" value={form.trailingPct ?? ''} onChange={handleChange} min={0.1} max={20} step={0.1} hint="Trail distance from peak/trough" />
           <Field label="Hard Stop %" name="hardStopPct" value={form.hardStopPct ?? ''} onChange={handleChange} min={0.1} max={50} step={0.1} hint="Absolute maximum loss per trade" />
         </Section>
-        <Section title="Signal Thresholds">
-          <Field label="Trade Score Threshold" name="tradeScoreThreshold" value={form.tradeScoreThreshold ?? ''} onChange={handleChange} min={0} max={100} step={1} hint="Min score (0–100) required to enter a trade" />
-          <Field label="Replacement Threshold" name="replacementThreshold" value={form.replacementThreshold ?? ''} onChange={handleChange} min={0} max={100} step={1} hint="Min opportunity score to replace an existing position" />
-        </Section>
+
+        {/* ── Trading Logic ─────────────────────────────────────────── */}
+        <div className="card" style={{ marginBottom: 16 }}>
+          <div style={{ fontSize: 12, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 16, paddingBottom: 10, borderBottom: '1px solid var(--border)' }}>
+            Trading Logic
+          </div>
+
+          {/* Feature toggles */}
+          <div style={{ marginBottom: 20 }}>
+            <Toggle
+              label="Require Volume Confirmation"
+              name="requireVolumeGate"
+              value={!!form.requireVolumeGate}
+              onChange={handleChange}
+              hint="Block entries when 5m volume ratio < 1.3× average"
+            />
+            <Toggle
+              label="Position Replacement"
+              name="replacementEnabled"
+              value={!!form.replacementEnabled}
+              onChange={handleChange}
+              hint="Allow bot to replace a weak position when a better opportunity scores higher"
+            />
+          </div>
+
+          {/* Thresholds */}
+          <div style={{ fontSize: 11, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 10 }}>Thresholds</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 14, marginBottom: 20 }}>
+            <Field label="Trade Score Threshold" name="tradeScoreThreshold" value={form.tradeScoreThreshold ?? ''} onChange={handleChange} min={0} max={100} step={1} hint="Min score (0–100) to enter a trade" />
+            <Field label="Replacement Threshold" name="replacementThreshold" value={form.replacementThreshold ?? ''} onChange={handleChange} min={0} max={100} step={1} hint="Min opportunity gap to replace a position" />
+          </div>
+
+          {/* Trade score weights */}
+          <div style={{ fontSize: 11, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 10 }}>
+            Score Weights
+            <span style={{ marginLeft: 8, textTransform: 'none', fontSize: 10, color: 'var(--text3)' }}>
+              (must sum to 100 — currently {[form.weightMomentum, form.weightTrend, form.weightVolume, form.weightBreakout, form.weightCandle].reduce((a, b) => (a || 0) + (b || 0), 0)})
+            </span>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: 14, marginBottom: 20 }}>
+            <Field label="Momentum %" name="weightMomentum" value={form.weightMomentum ?? ''} onChange={handleChange} min={0} max={100} step={1} hint="Multi-TF momentum" />
+            <Field label="Trend %" name="weightTrend" value={form.weightTrend ?? ''} onChange={handleChange} min={0} max={100} step={1} hint="EMA alignment" />
+            <Field label="Volume %" name="weightVolume" value={form.weightVolume ?? ''} onChange={handleChange} min={0} max={100} step={1} hint="Volume ratio" />
+            <Field label="Breakout %" name="weightBreakout" value={form.weightBreakout ?? ''} onChange={handleChange} min={0} max={100} step={1} hint="Price breakout/breakdown" />
+            <Field label="Candle %" name="weightCandle" value={form.weightCandle ?? ''} onChange={handleChange} min={0} max={100} step={1} hint="Candle structure" />
+          </div>
+
+          {/* Momentum timeframe weights */}
+          <div style={{ fontSize: 11, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 10 }}>
+            Momentum Timeframe Weights
+            <span style={{ marginLeft: 8, textTransform: 'none', fontSize: 10, color: 'var(--text3)' }}>
+              (must sum to 1 — currently {[form.mwt30s, form.mwt1m, form.mwt2m, form.mwt5m, form.mwt10m, form.mwt15m, form.mwt30m].reduce((a, b) => (a || 0) + (b || 0), 0).toFixed(2)})
+            </span>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))', gap: 14 }}>
+            <Field label="30s" name="mwt30s" value={form.mwt30s ?? ''} onChange={handleChange} min={0} max={1} step={0.01} />
+            <Field label="1m"  name="mwt1m"  value={form.mwt1m  ?? ''} onChange={handleChange} min={0} max={1} step={0.01} />
+            <Field label="2m"  name="mwt2m"  value={form.mwt2m  ?? ''} onChange={handleChange} min={0} max={1} step={0.01} />
+            <Field label="5m"  name="mwt5m"  value={form.mwt5m  ?? ''} onChange={handleChange} min={0} max={1} step={0.01} />
+            <Field label="10m" name="mwt10m" value={form.mwt10m ?? ''} onChange={handleChange} min={0} max={1} step={0.01} />
+            <Field label="15m" name="mwt15m" value={form.mwt15m ?? ''} onChange={handleChange} min={0} max={1} step={0.01} />
+            <Field label="30m" name="mwt30m" value={form.mwt30m ?? ''} onChange={handleChange} min={0} max={1} step={0.01} />
+          </div>
+        </div>
 
         <Section title="Risk Management">
           <Field label="Max Daily Drawdown %" name="maxDailyDrawdownPct" value={form.maxDailyDrawdownPct ?? ''} onChange={handleChange} min={0.5} max={50} step={0.5} hint="Halt trading if daily loss exceeds this" />

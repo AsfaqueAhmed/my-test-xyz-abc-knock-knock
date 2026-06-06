@@ -34,7 +34,6 @@ services:
       BINANCE_API_SECRET: ${BINANCE_API_SECRET:-}
       PAPER_TRADING: ${PAPER_TRADING:-true}
       INITIAL_BALANCE: ${INITIAL_BALANCE:-10000}
-      REQUIRE_VOLUME_GATE: ${REQUIRE_VOLUME_GATE:-true}
     volumes:
       - ./backend:/app
       - backend_node_modules:/app/node_modules

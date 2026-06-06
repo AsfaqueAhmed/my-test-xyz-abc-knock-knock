@@ -253,6 +253,7 @@ export class PositionEngineService implements OnModuleInit {
     const isLong = pos.side === 'LONG';
     let shouldClose = false;
     let exitReason = '';
+    let fillPrice = price; // default fill at scanner price
     const updates: any = { currentPrice: price };
 
     if (isLong) {
@@ -269,9 +270,19 @@ export class PositionEngineService implements OnModuleInit {
         const candidate = Math.max(floor, trailing);
         const ts = Math.max(candidate, Number(pos.trailingStop ?? 0));
         updates.trailingStop = ts;
-        if (price <= ts) { shouldClose = true; exitReason = 'TRAILING_STOP'; }
+        if (price <= ts) {
+          shouldClose = true;
+          exitReason = 'TRAILING_STOP';
+          // Fill at stop level — price may have gapped below it
+          fillPrice = Math.max(ts, price);
+        }
       }
-      if (price <= Number(pos.hardStop)) { shouldClose = true; exitReason = 'HARD_STOP'; }
+      if (price <= Number(pos.hardStop)) {
+        shouldClose = true;
+        exitReason = 'HARD_STOP';
+        // Fill at hard stop level — price may have gapped below it
+        fillPrice = Math.max(Number(pos.hardStop), price);
+      }
     } else {
       const newLowest = Math.min(Number(pos.lowestPrice ?? price), price);
       updates.lowestPrice = newLowest;
@@ -286,13 +297,23 @@ export class PositionEngineService implements OnModuleInit {
         const candidate = Math.min(ceiling, trailing);
         const ts = Math.min(candidate, Number(pos.trailingStop ?? Infinity));
         updates.trailingStop = ts;
-        if (price >= ts) { shouldClose = true; exitReason = 'TRAILING_STOP'; }
+        if (price >= ts) {
+          shouldClose = true;
+          exitReason = 'TRAILING_STOP';
+          // Fill at stop level — price may have gapped above it
+          fillPrice = Math.min(ts, price);
+        }
       }
-      if (price >= Number(pos.hardStop)) { shouldClose = true; exitReason = 'HARD_STOP'; }
+      if (price >= Number(pos.hardStop)) {
+        shouldClose = true;
+        exitReason = 'HARD_STOP';
+        // Fill at hard stop level — price may have gapped above it
+        fillPrice = Math.min(Number(pos.hardStop), price);
+      }
     }
 
     if (shouldClose) {
-      await this.closePosition(pos, price, exitReason);
+      await this.closePosition(pos, fillPrice, exitReason);
     } else {
       await this.prisma.position.update({ where: { id: pos.id }, data: updates });
     }

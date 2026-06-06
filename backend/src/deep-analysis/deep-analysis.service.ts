@@ -126,8 +126,10 @@ export class DeepAnalysisService {
     else if (volumeRatio >= 1.0) volumeScore = 20;  // slightly elevated vs average
     else                         volumeScore = 0;
 
-    if (volumeRatio >= 1.5) reasons.push(`Volume ${volumeRatio.toFixed(2)}x`);
-    else reasons.push(`Volume low (${volumeRatio.toFixed(2)}x)`);
+    if (volumeRatio >= 1.5)       reasons.push(`Volume ${volumeRatio.toFixed(2)}x`);
+    else if (volumeRatio >= 1.3)  reasons.push(`Volume ${volumeRatio.toFixed(2)}x (gate passed)`);
+    else if (cfg.requireVolumeGate) reasons.push(`Volume low (${volumeRatio.toFixed(2)}x) — below 1.3x gate`);
+    else                          reasons.push(`Volume ${volumeRatio.toFixed(2)}x (gate disabled)`);
 
     // ── Breakout Analysis (5m candles) ─────────────────────────────────────
     const prev3 = candles5m.slice(-4, -1);

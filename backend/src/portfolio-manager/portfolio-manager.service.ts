@@ -253,6 +253,11 @@ export class PortfolioManagerService implements OnModuleInit {
         continue;
       }
 
+      if (!cfg.replacementEnabled) {
+        this.logger.debug(`No slot for ${candidate.symbol} — replacement disabled`);
+        continue;
+      }
+
       const reason = !slotsAvailable ? 'max positions filled' : `insufficient balance ($${balance.toFixed(2)})`;
       this.logger.debug(`Evaluating replacement for ${candidate.symbol} — ${reason}`);
 
