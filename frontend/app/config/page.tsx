@@ -60,17 +60,33 @@ function Section({ title, children, cols = 'repeat(auto-fill, minmax(200px, 1fr)
   );
 }
 
+// Fields that must never be sent by the main form — they are read-only echoes
+// from GET /config that would corrupt stored credentials if submitted back.
+const CREDENTIAL_FIELDS = ['binanceApiKey', 'binanceApiSecret', 'binanceKeysSet'];
+
 export default function ConfigPage() {
   const qc = useQueryClient();
   const { data: config } = useQuery({ queryKey: ['config'], queryFn: fetchConfig });
   const [form, setForm] = useState<any>({});
   const [saved, setSaved] = useState(false);
 
+  // Separate state for exchange credentials — never pre-filled, only sent when the
+  // user explicitly types into the fields.
+  const [creds, setCreds] = useState({ binanceApiKey: '', binanceApiSecret: '', binanceTestnet: false });
+  const [credsSaved, setCredsSaved] = useState(false);
+  const [credsError, setCredsError] = useState('');
+
   useEffect(() => {
-    if (config) setForm({
-      ...config,
-      scanIntervalSec: Math.round((config.scanIntervalMs ?? 5000) / 1000),
-    });
+    if (config) {
+      // Strip credential fields — they must not flow back through the main form.
+      const { binanceApiKey, binanceApiSecret, binanceKeysSet, binanceTestnet, ...rest } = config as any;
+      setForm({
+        ...rest,
+        scanIntervalSec: Math.round((config.scanIntervalMs ?? 5000) / 1000),
+      });
+      // Only sync the testnet toggle (not the key/secret) so it reflects current state.
+      setCreds(prev => ({ ...prev, binanceTestnet: !!binanceTestnet }));
+    }
   }, [config]);
 
   const mutation = useMutation({
@@ -82,24 +98,55 @@ export default function ConfigPage() {
     },
   });
 
+  const credsMutation = useMutation({
+    mutationFn: updateConfig,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['config'] });
+      // Clear key/secret fields after save — never store them in component state
+      setCreds(prev => ({ ...prev, binanceApiKey: '', binanceApiSecret: '' }));
+      setCredsSaved(true);
+      setCredsError('');
+      setTimeout(() => setCredsSaved(false), 2000);
+    },
+    onError: (err: any) => {
+      setCredsError(err?.message ?? 'Failed to save credentials');
+    },
+  });
+
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value, type } = e.target;
     setForm((prev: any) => ({
       ...prev,
-      [name]: type === 'number' ? (value === '' ? '' : parseFloat(value)) : type === 'checkbox' ? (e.target as HTMLInputElement).checked : value,
+      [name]: type === 'number' ? (value === '' ? '' : parseFloat(value))
+             : type === 'checkbox' ? (e.target as HTMLInputElement).checked
+             : value,
     }));
   };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    // Strip scanIntervalSec (UI alias) and any credential fields that may have
+    // leaked into form state — the backend sanitises too, but defence-in-depth.
     const { scanIntervalSec, ...rest } = form;
+    CREDENTIAL_FIELDS.forEach(k => delete rest[k]);
     mutation.mutate({
       ...rest,
       scanIntervalMs: (scanIntervalSec ?? 5) * 1000,
     });
   };
 
+  const handleCredsSave = () => {
+    setCredsError('');
+    const payload: any = { binanceTestnet: creds.binanceTestnet };
+    // Only include key/secret if the user actually typed something
+    if (creds.binanceApiKey.trim())    payload.binanceApiKey    = creds.binanceApiKey.trim();
+    if (creds.binanceApiSecret.trim()) payload.binanceApiSecret = creds.binanceApiSecret.trim();
+    credsMutation.mutate(payload);
+  };
+
   if (!config) return <div style={{ color: 'var(--text2)', padding: 20 }}>Loading config...</div>;
+
+  const keysSet = !!(config as any).binanceKeysSet;
 
   return (
     <div>
@@ -117,7 +164,7 @@ export default function ConfigPage() {
       </div>
 
       <form onSubmit={handleSubmit}>
-        {/* Paper trading toggle */}
+        {/* Trading Mode */}
         <div className="card" style={{ marginBottom: 16 }}>
           <div style={{ fontSize: 12, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 14, paddingBottom: 10, borderBottom: '1px solid var(--border)' }}>
             Trading Mode
@@ -149,13 +196,11 @@ export default function ConfigPage() {
           <Field label="Hard Stop %" name="hardStopPct" value={form.hardStopPct ?? ''} onChange={handleChange} min={0.1} max={50} step={0.1} hint="Absolute maximum loss per trade" />
         </Section>
 
-        {/* ── Trading Logic ─────────────────────────────────────────── */}
+        {/* Trading Logic */}
         <div className="card" style={{ marginBottom: 16 }}>
           <div style={{ fontSize: 12, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 16, paddingBottom: 10, borderBottom: '1px solid var(--border)' }}>
             Trading Logic
           </div>
-
-          {/* Feature toggles */}
           <div style={{ marginBottom: 20 }}>
             <Toggle
               label="Require Volume Confirmation"
@@ -172,15 +217,11 @@ export default function ConfigPage() {
               hint="Allow bot to replace a weak position when a better opportunity scores higher"
             />
           </div>
-
-          {/* Thresholds */}
           <div style={{ fontSize: 11, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 10 }}>Thresholds</div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 14, marginBottom: 20 }}>
             <Field label="Trade Score Threshold" name="tradeScoreThreshold" value={form.tradeScoreThreshold ?? ''} onChange={handleChange} min={0} max={100} step={1} hint="Min score (0–100) to enter a trade" />
             <Field label="Replacement Threshold" name="replacementThreshold" value={form.replacementThreshold ?? ''} onChange={handleChange} min={0} max={100} step={1} hint="Min opportunity gap to replace a position" />
           </div>
-
-          {/* Trade score weights */}
           <div style={{ fontSize: 11, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 10 }}>
             Score Weights
             <span style={{ marginLeft: 8, textTransform: 'none', fontSize: 10, color: 'var(--text3)' }}>
@@ -194,8 +235,6 @@ export default function ConfigPage() {
             <Field label="Breakout %" name="weightBreakout" value={form.weightBreakout ?? ''} onChange={handleChange} min={0} max={100} step={1} hint="Price breakout/breakdown" />
             <Field label="Candle %" name="weightCandle" value={form.weightCandle ?? ''} onChange={handleChange} min={0} max={100} step={1} hint="Candle structure" />
           </div>
-
-          {/* Momentum timeframe weights */}
           <div style={{ fontSize: 11, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 10 }}>
             Momentum Timeframe Weights
             <span style={{ marginLeft: 8, textTransform: 'none', fontSize: 10, color: 'var(--text3)' }}>
@@ -246,6 +285,83 @@ export default function ConfigPage() {
           <Field label="Top Candidates" name="topCandidatesCount" value={form.topCandidatesCount ?? ''} onChange={handleChange} min={1} max={50} step={1} hint="Candidates passed to deep analysis per scan" />
         </Section>
       </form>
+
+      {/* Exchange Credentials — intentionally outside the main form so these
+          fields are never submitted with the general config save. */}
+      <div className="card" style={{ marginBottom: 16 }}>
+        <div style={{ fontSize: 12, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 14, paddingBottom: 10, borderBottom: '1px solid var(--border)' }}>
+          Exchange Credentials
+        </div>
+
+        {/* Key status indicator */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16, fontSize: 12 }}>
+          <span style={{
+            display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
+            background: keysSet ? 'var(--green)' : 'var(--red)',
+          }} />
+          <span style={{ color: keysSet ? 'var(--green)' : 'var(--text3)' }}>
+            {keysSet ? 'API keys configured' : 'No API keys — live trading is disabled'}
+          </span>
+        </div>
+
+        {/* Testnet toggle — always visible, applies immediately via Save Credentials */}
+        <div style={{ marginBottom: 16 }}>
+          <Toggle
+            label="Use Testnet"
+            name="binanceTestnet"
+            value={!!creds.binanceTestnet}
+            onChange={(e: any) => setCreds(prev => ({ ...prev, binanceTestnet: e.target.checked }))}
+            hint="Route orders to testnet.binancefuture.com instead of the live exchange"
+          />
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 16 }}>
+          <div>
+            <label style={{ display: 'block', marginBottom: 4, fontSize: 12, color: 'var(--text2)' }}>
+              API Key {keysSet && <span style={{ color: 'var(--text3)' }}>(leave blank to keep current)</span>}
+            </label>
+            <input
+              type="password"
+              autoComplete="off"
+              placeholder={keysSet ? '••••••••••••••••' : 'Paste API key…'}
+              value={creds.binanceApiKey}
+              onChange={e => setCreds(prev => ({ ...prev, binanceApiKey: e.target.value }))}
+              style={{ width: '100%', boxSizing: 'border-box' }}
+            />
+          </div>
+          <div>
+            <label style={{ display: 'block', marginBottom: 4, fontSize: 12, color: 'var(--text2)' }}>
+              API Secret {keysSet && <span style={{ color: 'var(--text3)' }}>(leave blank to keep current)</span>}
+            </label>
+            <input
+              type="password"
+              autoComplete="off"
+              placeholder={keysSet ? '••••••••••••••••' : 'Paste API secret…'}
+              value={creds.binanceApiSecret}
+              onChange={e => setCreds(prev => ({ ...prev, binanceApiSecret: e.target.value }))}
+              style={{ width: '100%', boxSizing: 'border-box' }}
+            />
+          </div>
+        </div>
+
+        {credsError && (
+          <div style={{ marginBottom: 12, padding: 10, background: 'rgba(255,71,87,0.1)', border: '1px solid rgba(255,71,87,0.3)', borderRadius: 6, fontSize: 12, color: 'var(--red)' }}>
+            {credsError}
+          </div>
+        )}
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={handleCredsSave}
+            disabled={credsMutation.isPending}
+          >
+            {credsMutation.isPending ? 'Saving…' : '🔑 Save Credentials'}
+          </button>
+          {credsSaved && <span style={{ color: 'var(--green)', fontSize: 13 }}>✓ Credentials saved</span>}
+        </div>
+      </div>
     </div>
   );
 }

@@ -11,6 +11,7 @@ import { PortfolioManagerService } from './portfolio-manager/portfolio-manager.s
 import { PrismaService } from './prisma/prisma.service';
 import { BotLogService } from './bot-log/bot-log.service';
 import { BalanceService } from './balance/balance.service';
+import { ExchangeService } from './exchange/exchange.service';
 
 @Controller()
 @ApiTags('Trading Platform')
@@ -26,11 +27,13 @@ export class AppController {
     private readonly prisma: PrismaService,
     private readonly botLog: BotLogService,
     private readonly balanceService: BalanceService,
+    private readonly exchange: ExchangeService,
     private readonly events: EventEmitter2,
   ) {}
 
   @Get('health')
   getHealth() {
+    const cfg = this.botConfig.get();
     return {
       status: 'ok',
       database: 'connected',
@@ -39,6 +42,9 @@ export class AppController {
       lastMarketUpdate: this.scanner.getLastUpdate(),
       symbolCount: this.scanner.getSymbolCount(),
       scanTurn: this.scanner.getScanTurn(),
+      mode: this.botConfig.getMode(),
+      paperTrading: cfg.paperTrading,
+      exchangeConfigured: this.exchange.isConfigured(),
       timestamp: new Date(),
     };
   }
@@ -61,10 +67,11 @@ export class AppController {
     const weekAgo = new Date(Date.now() - 7*24*60*60*1000);
     const monthAgo = new Date(Date.now() - 30*24*60*60*1000);
 
+    const mode = this.botConfig.getMode();
     const [todayTrades, weekTrades, monthTrades] = await Promise.all([
-      this.prisma.tradeHistory.findMany({ where: { exitTime: { gte: today } }, select: { pnl: true, fees: true } }),
-      this.prisma.tradeHistory.findMany({ where: { exitTime: { gte: weekAgo } }, select: { pnl: true, fees: true } }),
-      this.prisma.tradeHistory.findMany({ where: { exitTime: { gte: monthAgo } }, select: { pnl: true, fees: true } }),
+      this.prisma.tradeHistory.findMany({ where: { mode, exitTime: { gte: today } }, select: { pnl: true, fees: true } }),
+      this.prisma.tradeHistory.findMany({ where: { mode, exitTime: { gte: weekAgo } }, select: { pnl: true, fees: true } }),
+      this.prisma.tradeHistory.findMany({ where: { mode, exitTime: { gte: monthAgo } }, select: { pnl: true, fees: true } }),
     ]);
 
     const netPnl = (trades: { pnl: number; fees: number }[]) =>
@@ -74,6 +81,7 @@ export class AppController {
     const tickers = this.getStoredTokenList().filter(t => t.price > 0).slice(0, 20);
 
     return {
+      mode: this.botConfig.getMode(),
       balance,
       investedBalance,
       freeMargin,
@@ -123,7 +131,8 @@ export class AppController {
 
   @Get('signals')
   async getSignals() {
-    return this.prisma.signal.findMany({ orderBy: { createdAt: 'desc' }, take: 100 });
+    const mode = this.botConfig.getMode();
+    return this.prisma.signal.findMany({ where: { mode }, orderBy: { createdAt: 'desc' }, take: 100 });
   }
 
   // Live scanner state
@@ -262,13 +271,25 @@ export class AppController {
   async getRisk() { return this.risk.getStats(); }
 
   @Get('config')
-  getConfig() { return this.botConfig.get(); }
+  getConfig() {
+    return this.safeConfig();
+  }
 
   @Put('config')
   async updateConfig(@Body() body: any) {
-    const result = await this.botConfig.update(body);
+    await this.botConfig.update(body);
     this.scanner.restartTimers();
-    return result;
+    return this.safeConfig();
+  }
+
+  private safeConfig() {
+    const cfg = this.botConfig.get();
+    return {
+      ...cfg,
+      binanceApiKey:    cfg.binanceApiKey    ? `${cfg.binanceApiKey.slice(0, 4)}${'*'.repeat(Math.max(0, cfg.binanceApiKey.length - 4))}` : '',
+      binanceApiSecret: cfg.binanceApiSecret ? '***hidden***' : '',
+      binanceKeysSet:   !!(cfg.binanceApiKey && cfg.binanceApiSecret),
+    };
   }
 
   @Post('bot/start')
@@ -308,6 +329,7 @@ export class AppController {
     @Query('level')    level?: string,
     @Query('symbol')   symbol?: string,
     @Query('event')    event?: string,
+    @Query('mode')     mode?: string,
   ) {
     return this.botLog.getLogs({
       limit:    limit    ? parseInt(limit) : 200,
@@ -315,6 +337,7 @@ export class AppController {
       level:    level    || undefined,
       symbol:   symbol   || undefined,
       event:    event    || undefined,
+      mode:     mode     || undefined,
     });
   }
 
@@ -389,6 +412,20 @@ export class AppController {
     @Query('offset', new DefaultValuePipe(0),   ParseIntPipe) offset: number,
   ) {
     return this.balanceService.getLedger(limit, offset);
+  }
+
+  @Post('balance/sync')
+  async syncBalance() {
+    const cfg = this.botConfig.get();
+    if (cfg.paperTrading) {
+      throw new HttpException('Balance sync is only available in live mode (set paperTrading=false)', HttpStatus.BAD_REQUEST);
+    }
+    if (!this.exchange.isConfigured()) {
+      throw new HttpException('BINANCE_API_KEY and BINANCE_API_SECRET must be set', HttpStatus.BAD_REQUEST);
+    }
+    const liveBalance = await this.exchange.getAvailableBalance();
+    await this.balanceService.syncTo(liveBalance, 'Balance sync from Binance');
+    return { balance: liveBalance, synced: true };
   }
 
   @Post('balance/deposit')

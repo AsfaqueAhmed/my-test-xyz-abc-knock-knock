@@ -155,8 +155,9 @@ export class PortfolioManagerService implements OnModuleInit {
   // ─── Position Scoring ─────────────────────────────────────────────────────
 
   private async scoreOpenPositions() {
+    const mode = this.config.getMode();
     const openPositions = await this.prisma.position.findMany({
-      where: { status: { in: ['OPEN_LONG', 'LONG_TRAILING', 'OPEN_SHORT', 'SHORT_TRAILING'] } },
+      where: { status: { in: ['OPEN_LONG', 'LONG_TRAILING', 'OPEN_SHORT', 'SHORT_TRAILING'] }, mode },
     });
 
     this.positionScores.clear();
@@ -248,9 +249,10 @@ export class PortfolioManagerService implements OnModuleInit {
     if (candidates.length === 0) return;
     const cfg = this.config.get();
 
+    const mode = this.config.getMode();
     for (const candidate of candidates) {
       const openCount = await this.prisma.position.count({
-        where: { status: { in: ['OPEN_LONG', 'LONG_TRAILING', 'OPEN_SHORT', 'SHORT_TRAILING'] } },
+        where: { status: { in: ['OPEN_LONG', 'LONG_TRAILING', 'OPEN_SHORT', 'SHORT_TRAILING'] }, mode },
       });
 
       const slotsAvailable = openCount < cfg.maxActivePositions;
@@ -345,11 +347,13 @@ export class PortfolioManagerService implements OnModuleInit {
   private async persistPositionScores(scores: PositionStrengthScore[]) {
     if (scores.length === 0) return;
     try {
+      const mode = this.config.getMode();
       await this.prisma.portfolioScore.createMany({
         data: scores.map(s => ({
           positionId: BigInt(s.positionId),
           symbol: s.symbol,
           side: s.side,
+          mode,
           score: s.score,
           momentum: s.momentum,
           trendScore: s.trendScore,
@@ -367,10 +371,12 @@ export class PortfolioManagerService implements OnModuleInit {
   private async persistCandidateScores(candidates: TradeValidationResult[]) {
     if (candidates.length === 0) return;
     try {
+      const mode = this.config.getMode();
       await this.prisma.candidateScore.createMany({
         data: candidates.map(v => ({
           symbol: v.symbol,
           direction: v.direction,
+          mode,
           score: v.tradeScore,
           momentumScore: v.momentumScore,
           trendScore: v.trendScore,

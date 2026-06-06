@@ -14,6 +14,7 @@ import { RiskEngineModule } from './risk-engine/risk-engine.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { BotLogModule } from './bot-log/bot-log.module';
 import { BalanceModule } from './balance/balance.module';
+import { ExchangeModule } from './exchange/exchange.module';
 import { AppController } from './app.controller';
 
 @Module({
@@ -33,6 +34,7 @@ import { AppController } from './app.controller';
     AnalyticsModule,
     BotLogModule,
     BalanceModule,
+    ExchangeModule,
   ],
   controllers: [AppController],
 })

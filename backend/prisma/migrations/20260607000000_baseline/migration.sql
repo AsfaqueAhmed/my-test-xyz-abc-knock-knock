@@ -46,6 +46,7 @@ CREATE TABLE "Signal" (
     "volumeRatio" DOUBLE PRECISION NOT NULL,
     "breakoutType" TEXT,
     "acted" BOOLEAN NOT NULL DEFAULT false,
+    "mode" TEXT NOT NULL DEFAULT 'PAPER',
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "Signal_pkey" PRIMARY KEY ("id")
@@ -57,6 +58,7 @@ CREATE TABLE "Position" (
     "symbol" TEXT NOT NULL,
     "side" TEXT NOT NULL,
     "status" TEXT NOT NULL DEFAULT 'OPEN_LONG',
+    "mode" TEXT NOT NULL DEFAULT 'PAPER',
     "entryPrice" DOUBLE PRECISION NOT NULL,
     "currentPrice" DOUBLE PRECISION NOT NULL DEFAULT 0,
     "quantity" DOUBLE PRECISION NOT NULL DEFAULT 1,
@@ -91,6 +93,7 @@ CREATE TABLE "Order" (
     "price" DOUBLE PRECISION NOT NULL,
     "quantity" DOUBLE PRECISION NOT NULL,
     "fee" DOUBLE PRECISION NOT NULL DEFAULT 0,
+    "exchangeOrderId" TEXT,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "Order_pkey" PRIMARY KEY ("id")
@@ -101,6 +104,7 @@ CREATE TABLE "TradeHistory" (
     "id" BIGSERIAL NOT NULL,
     "symbol" TEXT NOT NULL,
     "side" TEXT NOT NULL,
+    "mode" TEXT NOT NULL DEFAULT 'PAPER',
     "entryPrice" DOUBLE PRECISION NOT NULL,
     "exitPrice" DOUBLE PRECISION NOT NULL,
     "quantity" DOUBLE PRECISION NOT NULL,
@@ -120,6 +124,7 @@ CREATE TABLE "TradeHistory" (
 CREATE TABLE "PerformanceStat" (
     "id" SERIAL NOT NULL,
     "date" TIMESTAMP(3) NOT NULL,
+    "mode" TEXT NOT NULL DEFAULT 'PAPER',
     "dailyPnl" DOUBLE PRECISION NOT NULL DEFAULT 0,
     "totalTrades" INTEGER NOT NULL DEFAULT 0,
     "winningTrades" INTEGER NOT NULL DEFAULT 0,
@@ -133,6 +138,51 @@ CREATE TABLE "PerformanceStat" (
 );
 
 -- CreateTable
+CREATE TABLE "PortfolioScore" (
+    "id" BIGSERIAL NOT NULL,
+    "positionId" BIGINT NOT NULL,
+    "symbol" TEXT NOT NULL,
+    "side" TEXT NOT NULL,
+    "mode" TEXT NOT NULL DEFAULT 'PAPER',
+    "score" DOUBLE PRECISION NOT NULL,
+    "momentum" DOUBLE PRECISION NOT NULL,
+    "trendScore" DOUBLE PRECISION NOT NULL,
+    "profitScore" DOUBLE PRECISION NOT NULL,
+    "volumeScore" DOUBLE PRECISION NOT NULL,
+    "tradeScore" DOUBLE PRECISION NOT NULL,
+    "inTrailingMode" BOOLEAN NOT NULL,
+    "makingNewExtremes" BOOLEAN NOT NULL,
+    "protected" BOOLEAN NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "PortfolioScore_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "CandidateScore" (
+    "id" BIGSERIAL NOT NULL,
+    "symbol" TEXT NOT NULL,
+    "direction" TEXT NOT NULL,
+    "mode" TEXT NOT NULL DEFAULT 'PAPER',
+    "score" DOUBLE PRECISION NOT NULL,
+    "momentumScore" DOUBLE PRECISION NOT NULL,
+    "trendScore" DOUBLE PRECISION NOT NULL,
+    "volumeScore" DOUBLE PRECISION NOT NULL,
+    "breakoutScore" DOUBLE PRECISION NOT NULL,
+    "candleScore" DOUBLE PRECISION NOT NULL,
+    "liquidityScore" DOUBLE PRECISION NOT NULL,
+    "volumeRatio" DOUBLE PRECISION NOT NULL,
+    "quoteVolume24h" DOUBLE PRECISION NOT NULL,
+    "openInterest" DOUBLE PRECISION NOT NULL,
+    "openInterestNotional" DOUBLE PRECISION NOT NULL,
+    "passed" BOOLEAN NOT NULL,
+    "reasons" TEXT NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "CandidateScore_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
 CREATE TABLE "BotConfig" (
     "id" SERIAL NOT NULL,
     "key" TEXT NOT NULL,
@@ -140,6 +190,21 @@ CREATE TABLE "BotConfig" (
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
     CONSTRAINT "BotConfig_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "BalanceLedger" (
+    "id" BIGSERIAL NOT NULL,
+    "type" TEXT NOT NULL,
+    "amount" DOUBLE PRECISION NOT NULL,
+    "balanceAfter" DOUBLE PRECISION NOT NULL,
+    "mode" TEXT NOT NULL DEFAULT 'PAPER',
+    "symbol" TEXT,
+    "positionId" BIGINT,
+    "description" TEXT NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "BalanceLedger_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
@@ -158,6 +223,7 @@ CREATE TABLE "RiskEvent" (
 CREATE TABLE "CooldownEvent" (
     "id" BIGSERIAL NOT NULL,
     "symbol" TEXT NOT NULL,
+    "mode" TEXT NOT NULL DEFAULT 'PAPER',
     "reason" TEXT NOT NULL,
     "startsAt" TIMESTAMP(3) NOT NULL,
     "endsAt" TIMESTAMP(3) NOT NULL,
@@ -179,6 +245,21 @@ CREATE TABLE "Notification" (
     CONSTRAINT "Notification_pkey" PRIMARY KEY ("id")
 );
 
+-- CreateTable
+CREATE TABLE "BotLog" (
+    "id" BIGSERIAL NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "level" TEXT NOT NULL,
+    "category" TEXT NOT NULL,
+    "event" TEXT NOT NULL,
+    "mode" TEXT NOT NULL DEFAULT 'PAPER',
+    "symbol" TEXT,
+    "message" TEXT NOT NULL,
+    "metadata" TEXT,
+
+    CONSTRAINT "BotLog_pkey" PRIMARY KEY ("id")
+);
+
 -- CreateIndex
 CREATE UNIQUE INDEX "User_username_key" ON "User"("username");
 
@@ -195,19 +276,62 @@ CREATE UNIQUE INDEX "Candle_symbol_timeframe_openTime_key" ON "Candle"("symbol",
 CREATE INDEX "Signal_symbol_createdAt_idx" ON "Signal"("symbol", "createdAt");
 
 -- CreateIndex
-CREATE INDEX "Position_symbol_status_idx" ON "Position"("symbol", "status");
+CREATE INDEX "Signal_mode_createdAt_idx" ON "Signal"("mode", "createdAt");
 
 -- CreateIndex
-CREATE INDEX "TradeHistory_symbol_createdAt_idx" ON "TradeHistory"("symbol", "createdAt");
+CREATE INDEX "Position_mode_symbol_status_idx" ON "Position"("mode", "symbol", "status");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "PerformanceStat_date_key" ON "PerformanceStat"("date");
+CREATE INDEX "Position_mode_status_idx" ON "Position"("mode", "status");
+
+-- CreateIndex
+CREATE INDEX "TradeHistory_mode_symbol_createdAt_idx" ON "TradeHistory"("mode", "symbol", "createdAt");
+
+-- CreateIndex
+CREATE INDEX "TradeHistory_mode_exitTime_idx" ON "TradeHistory"("mode", "exitTime");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "PerformanceStat_date_mode_key" ON "PerformanceStat"("date", "mode");
+
+-- CreateIndex
+CREATE INDEX "PortfolioScore_mode_positionId_createdAt_idx" ON "PortfolioScore"("mode", "positionId", "createdAt");
+
+-- CreateIndex
+CREATE INDEX "PortfolioScore_mode_symbol_createdAt_idx" ON "PortfolioScore"("mode", "symbol", "createdAt");
+
+-- CreateIndex
+CREATE INDEX "CandidateScore_mode_symbol_createdAt_idx" ON "CandidateScore"("mode", "symbol", "createdAt");
+
+-- CreateIndex
+CREATE INDEX "CandidateScore_mode_score_createdAt_idx" ON "CandidateScore"("mode", "score", "createdAt");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "BotConfig_key_key" ON "BotConfig"("key");
 
 -- CreateIndex
-CREATE INDEX "CooldownEvent_symbol_active_idx" ON "CooldownEvent"("symbol", "active");
+CREATE INDEX "BalanceLedger_mode_createdAt_idx" ON "BalanceLedger"("mode", "createdAt");
+
+-- CreateIndex
+CREATE INDEX "BalanceLedger_mode_type_createdAt_idx" ON "BalanceLedger"("mode", "type", "createdAt");
+
+-- CreateIndex
+CREATE INDEX "BalanceLedger_positionId_idx" ON "BalanceLedger"("positionId");
+
+-- CreateIndex
+CREATE INDEX "CooldownEvent_mode_symbol_active_idx" ON "CooldownEvent"("mode", "symbol", "active");
+
+-- CreateIndex
+CREATE INDEX "BotLog_mode_createdAt_idx" ON "BotLog"("mode", "createdAt");
+
+-- CreateIndex
+CREATE INDEX "BotLog_mode_category_createdAt_idx" ON "BotLog"("mode", "category", "createdAt");
+
+-- CreateIndex
+CREATE INDEX "BotLog_mode_symbol_createdAt_idx" ON "BotLog"("mode", "symbol", "createdAt");
+
+-- CreateIndex
+CREATE INDEX "BotLog_level_createdAt_idx" ON "BotLog"("level", "createdAt");
 
 -- AddForeignKey
 ALTER TABLE "Order" ADD CONSTRAINT "Order_positionId_fkey" FOREIGN KEY ("positionId") REFERENCES "Position"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+

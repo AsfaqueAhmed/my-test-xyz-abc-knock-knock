@@ -10,6 +10,7 @@ import { DeepAnalysisService } from '../deep-analysis/deep-analysis.service';
 import { BalanceService } from '../balance/balance.service';
 import { TradeValidationResult } from '../trade-validator/trade-validator.service';
 import { BotLogService } from '../bot-log/bot-log.service';
+import { ExchangeService } from '../exchange/exchange.service';
 
 const FEE_RATE = 0.0004;
 
@@ -25,6 +26,7 @@ export class PositionEngineService implements OnModuleInit {
     private readonly config: BotConfigService,
     private readonly deepAnalysis: DeepAnalysisService,
     private readonly balanceService: BalanceService,
+    private readonly exchange: ExchangeService,
     private readonly events: EventEmitter2,
     private readonly botLog: BotLogService,
   ) {}
@@ -147,9 +149,9 @@ export class PositionEngineService implements OnModuleInit {
 
   private async openNew(symbol: string, side: 'LONG' | 'SHORT', candidate: TradeValidationResult, capitalOverride?: number): Promise<boolean> {
     const cfg = this.config.get();
-    const price = this.scanner.getCurrentPrice(symbol);
-    if (price <= 0) {
-      this.logger.warn(`Cannot open ${symbol} ${side}: price unavailable (${price})`);
+    const scannerPrice = this.scanner.getCurrentPrice(symbol);
+    if (scannerPrice <= 0) {
+      this.logger.warn(`Cannot open ${symbol} ${side}: price unavailable (${scannerPrice})`);
       this.botLog.log('WARN', 'POSITION', 'SIGNAL_BLOCKED', `${symbol} ${side} blocked: price unavailable`, symbol, { direction: side, reason: 'Price unavailable' });
       return false;
     }
@@ -171,40 +173,100 @@ export class PositionEngineService implements OnModuleInit {
       this.logger.warn(`Cannot open ${symbol} ${side}: capital $${capital.toFixed(2)} too low`);
       return false;
     }
-    const quantity = (capital * cfg.leverage) / price;
-    const fee = price * quantity * FEE_RATE;
 
+    const mode = this.config.getMode();
+    let fillPrice = scannerPrice;
+    let rawQty = (capital * cfg.leverage) / scannerPrice;
+
+    // ─── Symbol filter validation (paper + live) ──────────────────────────
+    const qtyResult = this.exchange.floorQuantity(symbol, rawQty);
+    if (qtyResult === null) {
+      const f = this.exchange.getSymbolFilters(symbol);
+      this.logger.warn(`Cannot open ${symbol} ${side}: quantity ${rawQty.toFixed(8)} < minQty ${f.minQty}`);
+      this.botLog.log('WARN', 'POSITION', 'SIGNAL_BLOCKED', `${symbol} ${side} blocked: quantity below exchange minimum`, symbol, { direction: side, rawQty, minQty: f.minQty });
+      return false;
+    }
+    let quantity = qtyResult.quantity;
+    if (qtyResult.capped) {
+      const f = this.exchange.getSymbolFilters(symbol);
+      this.logger.log(`${symbol} ${side}: quantity capped at market max ${f.maxMarketQty} (requested ${rawQty.toFixed(6)})`);
+      this.botLog.log('INFO', 'POSITION', 'QUANTITY_CAPPED', `${symbol} ${side} quantity capped at market max ${f.maxMarketQty}`, symbol, { direction: side, rawQty, maxMarketQty: f.maxMarketQty });
+    }
+    const validationError = this.exchange.validateOrder(symbol, quantity, scannerPrice);
+    if (validationError) {
+      this.logger.warn(`Cannot open ${symbol} ${side}: ${validationError}`);
+      this.botLog.log('WARN', 'POSITION', 'SIGNAL_BLOCKED', `${symbol} ${side} blocked: ${validationError}`, symbol, { direction: side, reason: validationError });
+      return false;
+    }
+    let exchangeOrderId: string | undefined;
+
+    // ─── Live trading: place real order on Binance ────────────────────────
+    if (!cfg.paperTrading) {
+      if (!this.exchange.isConfigured()) {
+        this.logger.error(`Live trading enabled but BINANCE_API_KEY / BINANCE_API_SECRET not set`);
+        this.botLog.log('ERROR', 'EXCHANGE', 'ORDER_FAILED', `${symbol} ${side} blocked: API keys not configured`, symbol, { direction: side });
+        return false;
+      }
+      try {
+        await this.exchange.setLeverage(symbol, cfg.leverage);
+        const fill = await this.exchange.placeMarketOrder(
+          symbol,
+          side === 'LONG' ? 'BUY' : 'SELL',
+          quantity,
+        );
+        fillPrice = fill.avgPrice || scannerPrice;
+        quantity  = fill.executedQty || quantity;
+        exchangeOrderId = String(fill.orderId);
+        this.logger.log(`[LIVE] ${side} ${symbol} filled orderId=${fill.orderId} qty=${quantity} avgPrice=${fillPrice}`);
+        this.botLog.log('INFO', 'EXCHANGE', 'ORDER_FILLED', `${symbol} ${side} live order filled @ ${fillPrice}`, symbol, { direction: side, orderId: exchangeOrderId, quantity, fillPrice });
+      } catch (err) {
+        this.logger.error(`Exchange order failed for ${symbol} ${side}: ${err.message}`);
+        this.botLog.log('ERROR', 'EXCHANGE', 'ORDER_FAILED', `${symbol} ${side} live order failed: ${err.message}`, symbol, { direction: side, error: err.message });
+        return false;
+      }
+    }
+
+    const fee = fillPrice * quantity * FEE_RATE;
     const hardStop = side === 'LONG'
-      ? price * (1 - cfg.hardStopPct / 100)
-      : price * (1 + cfg.hardStopPct / 100);
+      ? fillPrice * (1 - cfg.hardStopPct / 100)
+      : fillPrice * (1 + cfg.hardStopPct / 100);
 
     const position = await this.prisma.position.create({
       data: {
-        symbol, side,
+        symbol, side, mode,
         status: side === 'LONG' ? 'OPEN_LONG' : 'OPEN_SHORT',
-        entryPrice: price,
-        currentPrice: price,
+        entryPrice: fillPrice,
+        currentPrice: fillPrice,
         quantity,
         leverage: cfg.leverage,
         hardStop,
         activationPct: cfg.activationPct,
         trailingPct: cfg.trailingPct,
         hardStopPct: cfg.hardStopPct,
-        avgEntryPrice: price,
-        highestPrice: side === 'LONG' ? price : null,
-        lowestPrice: side === 'SHORT' ? price : null,
+        avgEntryPrice: fillPrice,
+        highestPrice: side === 'LONG' ? fillPrice : null,
+        lowestPrice: side === 'SHORT' ? fillPrice : null,
         fees: fee,
         entryCount: 1,
       },
     });
 
     await this.prisma.order.create({
-      data: { positionId: position.id, type: 'MARKET', side: side === 'LONG' ? 'BUY' : 'SELL', price, quantity, fee },
+      data: {
+        positionId: position.id,
+        type: 'MARKET',
+        side: side === 'LONG' ? 'BUY' : 'SELL',
+        price: fillPrice,
+        quantity,
+        fee,
+        exchangeOrderId: exchangeOrderId ?? null,
+      },
     });
-    await this.balanceService.recordTradeOpen(symbol, position.id, fee);
+    await this.balanceService.recordTradeOpen(symbol, position.id, fee, mode);
 
-    await this.notify('POSITION_OPENED', `${side} opened`, `${symbol} @ $${price.toFixed(4)} score=${candidate.tradeScore.toFixed(1)}`);
-    this.logger.log(`Opened ${side} ${symbol} @ ${price} (score ${candidate.tradeScore.toFixed(1)})`);
+    const modeLabel = mode === 'PAPER' ? '[PAPER]' : mode === 'TESTNET' ? '[TESTNET]' : '[LIVE]';
+    await this.notify('POSITION_OPENED', `${modeLabel} ${side} opened`, `${symbol} @ $${fillPrice.toFixed(4)} score=${candidate.tradeScore.toFixed(1)}`);
+    this.logger.log(`${modeLabel} Opened ${side} ${symbol} @ ${fillPrice} (score ${candidate.tradeScore.toFixed(1)})`);
     this.events.emit('position.opened', { position, candidate });
     return true;
   }
@@ -213,16 +275,16 @@ export class PositionEngineService implements OnModuleInit {
     const cfg = this.config.get();
     if (position.entryCount >= cfg.maxEntriesPerSymbol) return false;
 
-    const price = this.scanner.getCurrentPrice(position.symbol);
-    if (price <= 0) {
-      this.logger.warn(`Cannot pyramid ${position.symbol}: price unavailable (${price})`);
+    const scannerPrice = this.scanner.getCurrentPrice(position.symbol);
+    if (scannerPrice <= 0) {
+      this.logger.warn(`Cannot pyramid ${position.symbol}: price unavailable (${scannerPrice})`);
       return false;
     }
 
     const isLong = position.side === 'LONG';
     const profitPct = isLong
-      ? (price - Number(position.avgEntryPrice)) / Number(position.avgEntryPrice) * 100
-      : (Number(position.avgEntryPrice) - price) / Number(position.avgEntryPrice) * 100;
+      ? (scannerPrice - Number(position.avgEntryPrice)) / Number(position.avgEntryPrice) * 100
+      : (Number(position.avgEntryPrice) - scannerPrice) / Number(position.avgEntryPrice) * 100;
     // Require at least 1% profit before adding to a position to avoid averaging into a reversal
     if (profitPct < 1.0) return false;
 
@@ -241,10 +303,54 @@ export class PositionEngineService implements OnModuleInit {
       candidate.maxSafePositionSize,
     );
     if (capital <= 0) return false;
-    const newQty = (capital * cfg.leverage) / price;
-    const fee = price * newQty * FEE_RATE;
-    const totalQty = position.quantity + newQty;
-    const newAvgEntry = (Number(position.avgEntryPrice) * Number(position.quantity) + price * newQty) / totalQty;
+
+    const mode = this.config.getMode();
+    let fillPrice = scannerPrice;
+    const rawNewQty = (capital * cfg.leverage) / scannerPrice;
+
+    // ─── Symbol filter validation (paper + live) ──────────────────────────
+    const pyramidQtyResult = this.exchange.floorQuantity(position.symbol, rawNewQty);
+    if (pyramidQtyResult === null) {
+      this.logger.warn(`Cannot pyramid ${position.symbol}: quantity below exchange minimum`);
+      return false;
+    }
+    let newQty = pyramidQtyResult.quantity;
+    if (pyramidQtyResult.capped) {
+      this.logger.log(`${position.symbol} pyramid: quantity capped at market max ${this.exchange.getSymbolFilters(position.symbol).maxMarketQty}`);
+    }
+    const pyramidValidation = this.exchange.validateOrder(position.symbol, newQty, scannerPrice);
+    if (pyramidValidation) {
+      this.logger.warn(`Cannot pyramid ${position.symbol}: ${pyramidValidation}`);
+      return false;
+    }
+    let exchangeOrderId: string | undefined;
+
+    // ─── Live trading: place real pyramid order ───────────────────────────
+    if (!cfg.paperTrading) {
+      if (!this.exchange.isConfigured()) {
+        this.logger.error(`Live pyramid blocked for ${position.symbol}: API keys not set`);
+        return false;
+      }
+      try {
+        const fill = await this.exchange.placeMarketOrder(
+          position.symbol,
+          isLong ? 'BUY' : 'SELL',
+          newQty,
+        );
+        fillPrice = fill.avgPrice || scannerPrice;
+        newQty    = fill.executedQty || newQty;
+        exchangeOrderId = String(fill.orderId);
+        this.logger.log(`[LIVE] Pyramid ${position.symbol} orderId=${fill.orderId} qty=${newQty} avgPrice=${fillPrice}`);
+      } catch (err) {
+        this.logger.error(`Exchange pyramid order failed for ${position.symbol}: ${err.message}`);
+        this.botLog.log('ERROR', 'EXCHANGE', 'ORDER_FAILED', `${position.symbol} pyramid failed: ${err.message}`, position.symbol, { error: err.message });
+        return false;
+      }
+    }
+
+    const fee = fillPrice * newQty * FEE_RATE;
+    const totalQty = Number(position.quantity) + newQty;
+    const newAvgEntry = (Number(position.avgEntryPrice) * Number(position.quantity) + fillPrice * newQty) / totalQty;
 
     await this.prisma.position.update({
       where: { id: position.id },
@@ -252,16 +358,25 @@ export class PositionEngineService implements OnModuleInit {
     });
 
     await this.prisma.order.create({
-      data: { positionId: position.id, type: 'MARKET', side: isLong ? 'BUY' : 'SELL', price, quantity: newQty, fee },
+      data: {
+        positionId: position.id,
+        type: 'MARKET',
+        side: isLong ? 'BUY' : 'SELL',
+        price: fillPrice,
+        quantity: newQty,
+        fee,
+        exchangeOrderId: exchangeOrderId ?? null,
+      },
     });
-    await this.balanceService.recordTradeOpen(position.symbol, position.id, fee);
+    await this.balanceService.recordTradeOpen(position.symbol, position.id, fee, mode);
 
-    this.logger.log(`Pyramided ${position.symbol} ${position.side} @ ${price} (entry ${position.entryCount + 1})`);
+    const modeLabel = cfg.paperTrading ? '[PAPER]' : cfg.binanceTestnet ? '[TESTNET]' : '[LIVE]';
+    this.logger.log(`${modeLabel} Pyramided ${position.symbol} ${position.side} @ ${fillPrice} (entry ${position.entryCount + 1})`);
     this.events.emit('position.pyramided', {
       symbol: position.symbol,
       side: position.side,
-      price,
-      newAvgEntry: newAvgEntry,
+      price: fillPrice,
+      newAvgEntry,
       entryCount: position.entryCount + 1,
     });
     return true;
@@ -271,8 +386,9 @@ export class PositionEngineService implements OnModuleInit {
 
   @Cron('*/3 * * * * *')
   async updatePositions() {
+    const mode = this.config.getMode();
     const openPositions = await this.prisma.position.findMany({
-      where: { status: { in: ['OPEN_LONG','LONG_TRAILING','OPEN_SHORT','SHORT_TRAILING'] } },
+      where: { status: { in: ['OPEN_LONG','LONG_TRAILING','OPEN_SHORT','SHORT_TRAILING'] }, mode },
     });
     for (const pos of openPositions) await this.updatePosition(pos);
   }
@@ -281,11 +397,10 @@ export class PositionEngineService implements OnModuleInit {
     const price = this.scanner.getCurrentPrice(pos.symbol);
     if (!price) return;
 
-    const cfg = this.config.get();
     const isLong = pos.side === 'LONG';
     let shouldClose = false;
     let exitReason = '';
-    let fillPrice = price; // default fill at scanner price
+    let fillPrice = price;
     const updates: any = { currentPrice: price };
 
     if (isLong) {
@@ -305,14 +420,12 @@ export class PositionEngineService implements OnModuleInit {
         if (price <= ts) {
           shouldClose = true;
           exitReason = 'TRAILING_STOP';
-          // Fill at stop level — price may have gapped below it
           fillPrice = Math.max(ts, price);
         }
       }
       if (price <= Number(pos.hardStop)) {
         shouldClose = true;
         exitReason = 'HARD_STOP';
-        // Fill at hard stop level — price may have gapped below it
         fillPrice = Math.max(Number(pos.hardStop), price);
       }
     } else {
@@ -332,14 +445,12 @@ export class PositionEngineService implements OnModuleInit {
         if (price >= ts) {
           shouldClose = true;
           exitReason = 'TRAILING_STOP';
-          // Fill at stop level — price may have gapped above it
           fillPrice = Math.min(ts, price);
         }
       }
       if (price >= Number(pos.hardStop)) {
         shouldClose = true;
         exitReason = 'HARD_STOP';
-        // Fill at hard stop level — price may have gapped above it
         fillPrice = Math.min(Number(pos.hardStop), price);
       }
     }
@@ -354,8 +465,34 @@ export class PositionEngineService implements OnModuleInit {
   // ─── Close Position ───────────────────────────────────────────────────────
 
   async closePosition(pos: any, price?: number, exitReason = 'MANUAL') {
-    const exitPrice = price ?? this.scanner.getCurrentPrice(pos.symbol);
+    const cfg = this.config.get();
+    let exitPrice = price ?? this.scanner.getCurrentPrice(pos.symbol);
     if (!exitPrice) return;
+
+    // ─── Live trading: send reduce-only close order first ─────────────────
+    if (!cfg.paperTrading) {
+      if (!this.exchange.isConfigured()) {
+        this.logger.error(`Live close blocked for ${pos.symbol}: API keys not set`);
+        this.botLog.log('ERROR', 'EXCHANGE', 'ORDER_FAILED', `${pos.symbol} close blocked: API keys not configured`, pos.symbol, { exitReason });
+        return; // Do not close in DB — keep in sync with exchange
+      }
+      try {
+        const closeSide = pos.side === 'LONG' ? 'SELL' : 'BUY';
+        const fill = await this.exchange.placeMarketOrder(
+          pos.symbol,
+          closeSide,
+          Number(pos.quantity),
+          true, // reduceOnly
+        );
+        exitPrice = fill.avgPrice || exitPrice;
+        this.logger.log(`[LIVE] Close ${pos.symbol} ${closeSide} orderId=${fill.orderId} qty=${fill.executedQty} avgPrice=${exitPrice}`);
+        this.botLog.log('INFO', 'EXCHANGE', 'ORDER_FILLED', `${pos.symbol} close filled @ ${exitPrice}`, pos.symbol, { orderId: String(fill.orderId), exitReason, fillPrice: exitPrice });
+      } catch (err) {
+        this.logger.error(`Exchange close failed for ${pos.symbol}: ${err.message}`);
+        this.botLog.log('ERROR', 'EXCHANGE', 'ORDER_FAILED', `${pos.symbol} close failed: ${err.message}`, pos.symbol, { exitReason, error: err.message });
+        return; // Do not close in DB — keep in sync with exchange
+      }
+    }
 
     const isLong = pos.side === 'LONG';
     const priceDiff = isLong
@@ -367,7 +504,8 @@ export class PositionEngineService implements OnModuleInit {
     const exitFee = exitPrice * Number(pos.quantity) * FEE_RATE;
     const netPnl = pnl - exitFee;
 
-    await this.balanceService.recordTradeClose(pos.symbol, pos.id, netPnl);
+    const posMode = pos.mode ?? this.config.getMode();
+    await this.balanceService.recordTradeClose(pos.symbol, pos.id, netPnl, posMode);
     this.risk.updateDailyPnl(netPnl);
 
     const duration = Math.floor((Date.now() - new Date(pos.openedAt).getTime()) / 1000);
@@ -378,30 +516,45 @@ export class PositionEngineService implements OnModuleInit {
     });
 
     await this.prisma.tradeHistory.create({
-      data: { symbol: pos.symbol, side: pos.side, entryPrice: Number(pos.avgEntryPrice), exitPrice, quantity: Number(pos.quantity), pnl, pnlPct, fees: Number(pos.fees ?? 0) + exitFee, duration, exitReason, entryTime: pos.openedAt, exitTime: new Date() },
+      data: { symbol: pos.symbol, side: pos.side, mode: posMode, entryPrice: Number(pos.avgEntryPrice), exitPrice, quantity: Number(pos.quantity), pnl, pnlPct, fees: Number(pos.fees ?? 0) + exitFee, duration, exitReason, entryTime: pos.openedAt, exitTime: new Date() },
     });
 
-    await this.updateDailyStats(pnl, exitFee, pnl > 0);
-    await this.notify('POSITION_CLOSED', `${pos.side} closed`, `${pos.symbol} ${exitReason} PnL: $${netPnl.toFixed(2)}`);
-    this.logger.log(`Closed ${pos.symbol} ${pos.side} @ ${exitPrice} PnL: ${netPnl.toFixed(2)} (${exitReason})`);
+    await this.updateDailyStats(pnl, exitFee, pnl > 0, posMode);
+    const modeLabel = posMode === 'PAPER' ? '[PAPER]' : posMode === 'TESTNET' ? '[TESTNET]' : '[LIVE]';
+    await this.notify('POSITION_CLOSED', `${modeLabel} ${pos.side} closed`, `${pos.symbol} ${exitReason} PnL: $${netPnl.toFixed(2)}`);
+    this.logger.log(`${modeLabel} Closed ${pos.symbol} ${pos.side} @ ${exitPrice} PnL: ${netPnl.toFixed(2)} (${exitReason})`);
     this.events.emit('position.closed', { pos, pnl: netPnl, exitReason, exitPrice, pnlPct, duration });
   }
 
   async closeAllPositions() {
+    const mode = this.config.getMode();
     const open = await this.prisma.position.findMany({
-      where: { status: { in: ['OPEN_LONG','LONG_TRAILING','OPEN_SHORT','SHORT_TRAILING'] } },
+      where: { status: { in: ['OPEN_LONG','LONG_TRAILING','OPEN_SHORT','SHORT_TRAILING'] }, mode },
     });
     for (const pos of open) await this.closePosition(pos, undefined, 'EMERGENCY_CLOSE');
   }
 
-  private async updateDailyStats(pnl: number, fee: number, isWin: boolean) {
+  private async updateDailyStats(pnl: number, fee: number, isWin: boolean, mode: string) {
     const today = new Date(); today.setHours(0, 0, 0, 0);
     try {
-      await this.prisma.performanceStat.upsert({
-        where: { date: today },
-        update: { dailyPnl: { increment: pnl }, totalTrades: { increment: 1 }, winningTrades: isWin ? { increment: 1 } : undefined, losingTrades: !isWin ? { increment: 1 } : undefined, totalFees: { increment: fee }, equity: this.balanceService.getBalance() },
-        create: { date: today, dailyPnl: pnl, totalTrades: 1, winningTrades: isWin ? 1 : 0, losingTrades: isWin ? 0 : 1, totalFees: fee, equity: this.balanceService.getBalance() },
-      });
+      const existing = await this.prisma.performanceStat.findFirst({ where: { date: today, mode } });
+      if (existing) {
+        await this.prisma.performanceStat.update({
+          where: { id: existing.id },
+          data: {
+            dailyPnl: { increment: pnl },
+            totalTrades: { increment: 1 },
+            winningTrades: isWin ? { increment: 1 } : undefined,
+            losingTrades: !isWin ? { increment: 1 } : undefined,
+            totalFees: { increment: fee },
+            equity: this.balanceService.getBalance(),
+          },
+        });
+      } else {
+        await this.prisma.performanceStat.create({
+          data: { date: today, mode, dailyPnl: pnl, totalTrades: 1, winningTrades: isWin ? 1 : 0, losingTrades: isWin ? 0 : 1, totalFees: fee, equity: this.balanceService.getBalance() },
+        });
+      }
     } catch (_) {}
   }
 
@@ -415,6 +568,7 @@ export class PositionEngineService implements OnModuleInit {
         data: {
           symbol: candidate.symbol,
           direction: candidate.direction,
+          mode: this.config.getMode(),
           momentumScore: candidate.momentumScore / 100,
           confidence: candidate.tradeScore / 100,
           trendDirection: candidate.trendScore >= 100
@@ -446,10 +600,10 @@ export class PositionEngineService implements OnModuleInit {
     const effectiveMax = Math.min(cfg.maxCapitalPerEntry, this.balanceService.getBalance() * 0.1, analysis.maxSafePositionSize);
 
     const partialScore = (a: typeof analysis) =>
-      a.trendScore   * cfg.weightTrend    / 100 +
-      a.volumeScore  * cfg.weightVolume   / 100 +
+      a.trendScore    * cfg.weightTrend    / 100 +
+      a.volumeScore   * cfg.weightVolume   / 100 +
       a.breakoutScore * cfg.weightBreakout / 100 +
-      a.candleScore  * cfg.weightCandle   / 100;
+      a.candleScore   * cfg.weightCandle   / 100;
 
     const thisScore     = partialScore(analysis);
     const oppositeScore = partialScore(oppositeAnalysis);
@@ -471,13 +625,15 @@ export class PositionEngineService implements OnModuleInit {
       oppositeDirection: opposite,
       oppositeStructureScore: oppositeScore,
       directionWarning,
+      paperTrading: cfg.paperTrading,
+      exchangeConfigured: this.exchange.isConfigured(),
     };
   }
 
   async manualOpen(symbol: string, direction: 'LONG' | 'SHORT', requestedAmount?: number) {
     const cfg = this.config.get();
-    const price = this.scanner.getCurrentPrice(symbol);
-    if (!price) throw new Error(`No price available for ${symbol}`);
+    const scannerPrice = this.scanner.getCurrentPrice(symbol);
+    if (!scannerPrice) throw new Error(`No price available for ${symbol}`);
 
     const analysis = await this.deepAnalysis.analyse(symbol, direction);
     const maxSafe = analysis.maxSafePositionSize;
@@ -500,45 +656,88 @@ export class PositionEngineService implements OnModuleInit {
     if (capital > balance) throw new Error(`Capital $${capital.toFixed(2)} exceeds available balance $${balance.toFixed(2)}`);
 
     const side = direction;
-    const quantity = (capital * cfg.leverage) / price;
-    const fee = price * quantity * FEE_RATE;
+    const mode = this.config.getMode();
+    let fillPrice = scannerPrice;
+    const rawQty = (capital * cfg.leverage) / scannerPrice;
+
+    // ─── Symbol filter validation (paper + live) ──────────────────────────
+    const manualQtyResult = this.exchange.floorQuantity(symbol, rawQty);
+    if (manualQtyResult === null) {
+      const f = this.exchange.getSymbolFilters(symbol);
+      throw new Error(`Quantity ${rawQty.toFixed(8)} below exchange minimum ${f.minQty} for ${symbol}`);
+    }
+    const manualValidation = this.exchange.validateOrder(symbol, manualQtyResult.quantity, scannerPrice);
+    if (manualValidation) throw new Error(manualValidation);
+
+    let quantity = manualQtyResult.quantity;
+    let exchangeOrderId: string | undefined;
+
+    // ─── Live trading: place real manual order ────────────────────────────
+    if (!cfg.paperTrading) {
+      if (!this.exchange.isConfigured()) {
+        throw new Error('Live trading enabled but BINANCE_API_KEY / BINANCE_API_SECRET not set');
+      }
+      await this.exchange.setLeverage(symbol, cfg.leverage);
+      const fill = await this.exchange.placeMarketOrder(
+        symbol,
+        side === 'LONG' ? 'BUY' : 'SELL',
+        quantity,
+      );
+      fillPrice = fill.avgPrice || scannerPrice;
+      quantity  = fill.executedQty || quantity;
+      exchangeOrderId = String(fill.orderId);
+      this.logger.log(`[LIVE MANUAL] ${side} ${symbol} orderId=${fill.orderId} qty=${quantity} avgPrice=${fillPrice}`);
+    }
+
+    const fee = fillPrice * quantity * FEE_RATE;
     const hardStop = side === 'LONG'
-      ? price * (1 - cfg.hardStopPct / 100)
-      : price * (1 + cfg.hardStopPct / 100);
+      ? fillPrice * (1 - cfg.hardStopPct / 100)
+      : fillPrice * (1 + cfg.hardStopPct / 100);
 
     const position = await this.prisma.position.create({
       data: {
-        symbol, side,
+        symbol, side, mode,
         status: side === 'LONG' ? 'OPEN_LONG' : 'OPEN_SHORT',
-        entryPrice: price, currentPrice: price,
+        entryPrice: fillPrice, currentPrice: fillPrice,
         quantity, leverage: cfg.leverage,
         hardStop, activationPct: cfg.activationPct,
         trailingPct: cfg.trailingPct, hardStopPct: cfg.hardStopPct,
-        avgEntryPrice: price,
-        highestPrice: side === 'LONG' ? price : null,
-        lowestPrice: side === 'SHORT' ? price : null,
+        avgEntryPrice: fillPrice,
+        highestPrice: side === 'LONG' ? fillPrice : null,
+        lowestPrice: side === 'SHORT' ? fillPrice : null,
         fees: fee, entryCount: 1,
       },
     });
 
     await this.prisma.order.create({
-      data: { positionId: position.id, type: 'MARKET', side: side === 'LONG' ? 'BUY' : 'SELL', price, quantity, fee },
+      data: {
+        positionId: position.id,
+        type: 'MARKET',
+        side: side === 'LONG' ? 'BUY' : 'SELL',
+        price: fillPrice,
+        quantity,
+        fee,
+        exchangeOrderId: exchangeOrderId ?? null,
+      },
     });
-    await this.balanceService.recordTradeOpen(symbol, position.id, fee);
+    await this.balanceService.recordTradeOpen(symbol, position.id, fee, mode);
 
-    await this.notify('POSITION_OPENED', `MANUAL ${side}`, `${symbol} @ $${price} capital=$${capital.toFixed(2)} maxSafe=$${maxSafe.toFixed(0)}`);
-    this.logger.log(`[MANUAL] Opened ${side} ${symbol} @ ${price} capital=$${capital.toFixed(2)} (maxSafe=$${maxSafe.toFixed(0)})`);
+    const modeLabel = mode === 'PAPER' ? '[PAPER MANUAL]' : mode === 'TESTNET' ? '[TESTNET MANUAL]' : '[LIVE MANUAL]';
+    await this.notify('POSITION_OPENED', `${modeLabel} ${side}`, `${symbol} @ $${fillPrice} capital=$${capital.toFixed(2)} maxSafe=$${maxSafe.toFixed(0)}`);
+    this.logger.log(`${modeLabel} Opened ${side} ${symbol} @ ${fillPrice} capital=$${capital.toFixed(2)} (maxSafe=$${maxSafe.toFixed(0)})`);
     this.events.emit('position.opened', { position, manual: true });
 
-    return { success: true, symbol, side, price, capital, maxSafePositionSize: maxSafe, quantity };
+    return { success: true, symbol, side, mode, price: fillPrice, capital, maxSafePositionSize: maxSafe, quantity, exchangeOrderId };
   }
 
   getBalance() { return this.balanceService.getBalance(); }
   async getOpenPositions() {
-    return this.prisma.position.findMany({ where: { status: { in: ['OPEN_LONG','LONG_TRAILING','OPEN_SHORT','SHORT_TRAILING'] } }, orderBy: { openedAt: 'desc' } });
+    const mode = this.config.getMode();
+    return this.prisma.position.findMany({ where: { status: { in: ['OPEN_LONG','LONG_TRAILING','OPEN_SHORT','SHORT_TRAILING'] }, mode }, orderBy: { openedAt: 'desc' } });
   }
   async getAllPositions(limit = 100) {
-    return this.prisma.position.findMany({ orderBy: { openedAt: 'desc' }, take: limit });
+    const mode = this.config.getMode();
+    return this.prisma.position.findMany({ where: { mode }, orderBy: { openedAt: 'desc' }, take: limit });
   }
   async getPosition(id: string) {
     return this.prisma.position.findUnique({ where: { id: BigInt(id) }, include: { orders: true } });

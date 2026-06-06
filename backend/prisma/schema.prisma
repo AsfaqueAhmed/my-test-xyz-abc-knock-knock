@@ -49,9 +49,11 @@ model Signal {
   volumeRatio    Float
   breakoutType   String?
   acted          Boolean  @default(false)
+  mode           String   @default("PAPER")
   createdAt      DateTime @default(now())
 
   @@index([symbol, createdAt])
+  @@index([mode, createdAt])
 }
 
 model Position {
@@ -59,6 +61,7 @@ model Position {
   symbol          String
   side            String
   status          String   @default("OPEN_LONG")
+  mode            String   @default("PAPER")
   entryPrice      Float
   currentPrice    Float    @default(0)
   quantity        Float    @default(1)
@@ -82,25 +85,28 @@ model Position {
   updatedAt       DateTime @updatedAt
 
   orders          Order[]
-  @@index([symbol, status])
+  @@index([mode, symbol, status])
+  @@index([mode, status])
 }
 
 model Order {
-  id         BigInt   @id @default(autoincrement())
-  positionId BigInt
-  position   Position @relation(fields: [positionId], references: [id])
-  type       String
-  side       String
-  price      Float
-  quantity   Float
-  fee        Float    @default(0)
-  createdAt  DateTime @default(now())
+  id               BigInt   @id @default(autoincrement())
+  positionId       BigInt
+  position         Position @relation(fields: [positionId], references: [id])
+  type             String
+  side             String
+  price            Float
+  quantity         Float
+  fee              Float    @default(0)
+  exchangeOrderId  String?
+  createdAt        DateTime @default(now())
 }
 
 model TradeHistory {
   id          BigInt   @id @default(autoincrement())
   symbol      String
   side        String
+  mode        String   @default("PAPER")
   entryPrice  Float
   exitPrice   Float
   quantity    Float
@@ -113,12 +119,14 @@ model TradeHistory {
   exitTime    DateTime
   createdAt   DateTime @default(now())
 
-  @@index([symbol, createdAt])
+  @@index([mode, symbol, createdAt])
+  @@index([mode, exitTime])
 }
 
 model PerformanceStat {
   id            Int      @id @default(autoincrement())
-  date          DateTime @unique
+  date          DateTime
+  mode          String   @default("PAPER")
   dailyPnl      Float    @default(0)
   totalTrades   Int      @default(0)
   winningTrades Int      @default(0)
@@ -127,6 +135,8 @@ model PerformanceStat {
   maxDrawdown   Float    @default(0)
   equity        Float    @default(10000)
   createdAt     DateTime @default(now())
+
+  @@unique([date, mode])
 }
 
 model PortfolioScore {
@@ -134,6 +144,7 @@ model PortfolioScore {
   positionId        BigInt
   symbol            String
   side              String
+  mode              String   @default("PAPER")
   score             Float
   momentum          Float
   trendScore        Float
@@ -145,14 +156,15 @@ model PortfolioScore {
   protected         Boolean
   createdAt         DateTime @default(now())
 
-  @@index([positionId, createdAt])
-  @@index([symbol, createdAt])
+  @@index([mode, positionId, createdAt])
+  @@index([mode, symbol, createdAt])
 }
 
 model CandidateScore {
   id             BigInt   @id @default(autoincrement())
   symbol         String
   direction      String
+  mode           String   @default("PAPER")
   score          Float
   momentumScore  Float
   trendScore     Float
@@ -168,8 +180,8 @@ model CandidateScore {
   reasons        String
   createdAt      DateTime @default(now())
 
-  @@index([symbol, createdAt])
-  @@index([score, createdAt])
+  @@index([mode, symbol, createdAt])
+  @@index([mode, score, createdAt])
 }
 
 model BotConfig {
@@ -184,13 +196,14 @@ model BalanceLedger {
   type         String   // DEPOSIT | WITHDRAWAL | TRADE_OPEN | TRADE_CLOSE
   amount       Float    // positive = credit, negative = debit
   balanceAfter Float
+  mode         String   @default("PAPER")
   symbol       String?
   positionId   BigInt?
   description  String
   createdAt    DateTime @default(now())
 
-  @@index([createdAt])
-  @@index([type, createdAt])
+  @@index([mode, createdAt])
+  @@index([mode, type, createdAt])
   @@index([positionId])
 }
 
@@ -206,13 +219,14 @@ model RiskEvent {
 model CooldownEvent {
   id        BigInt   @id @default(autoincrement())
   symbol    String
+  mode      String   @default("PAPER")
   reason    String
   startsAt  DateTime
   endsAt    DateTime
   active    Boolean  @default(true)
   createdAt DateTime @default(now())
 
-  @@index([symbol, active])
+  @@index([mode, symbol, active])
 }
 
 model Notification {
@@ -228,14 +242,15 @@ model BotLog {
   id        BigInt   @id @default(autoincrement())
   createdAt DateTime @default(now())
   level     String   // INFO | WARN | ERROR
-  category  String   // BOT | POSITION | RISK | SYSTEM
+  category  String   // BOT | POSITION | RISK | SYSTEM | EXCHANGE
   event     String   // BOT_STARTED, POSITION_OPENED, etc.
+  mode      String   @default("PAPER")
   symbol    String?
   message   String
   metadata  String?  // JSON blob
 
-  @@index([createdAt])
-  @@index([category, createdAt])
-  @@index([symbol, createdAt])
+  @@index([mode, createdAt])
+  @@index([mode, category, createdAt])
+  @@index([mode, symbol, createdAt])
   @@index([level, createdAt])
 }

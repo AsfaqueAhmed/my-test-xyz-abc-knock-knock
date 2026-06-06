@@ -1,10 +1,10 @@
 import { Module } from '@nestjs/common';
-import { BalanceService } from './balance.service';
+import { ExchangeService } from './exchange.service';
 import { BotConfigModule } from '../config/bot-config.module';
 
 @Module({
   imports: [BotConfigModule],
-  providers: [BalanceService],
-  exports: [BalanceService],
+  providers: [ExchangeService],
+  exports: [ExchangeService],
 })
-export class BalanceModule {}
+export class ExchangeModule {}

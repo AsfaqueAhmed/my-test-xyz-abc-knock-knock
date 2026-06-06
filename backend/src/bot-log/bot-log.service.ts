@@ -1,15 +1,19 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 import { PrismaService } from '../prisma/prisma.service';
+import { BotConfigService } from '../config/bot-config.service';
 
 type Level    = 'INFO' | 'WARN' | 'ERROR';
-type Category = 'BOT' | 'POSITION' | 'RISK' | 'SYSTEM';
+type Category = 'BOT' | 'POSITION' | 'RISK' | 'SYSTEM' | 'EXCHANGE';
 
 @Injectable()
 export class BotLogService {
   private readonly logger = new Logger(BotLogService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly config: BotConfigService,
+  ) {}
 
   private async write(
     level: Level,
@@ -25,6 +29,7 @@ export class BotLogService {
           level,
           category,
           event,
+          mode: this.config.getMode(),
           symbol: symbol ?? null,
           message,
           metadata: metadata ? JSON.stringify(metadata) : null,
@@ -183,8 +188,9 @@ export class BotLogService {
     level?: string;
     symbol?: string;
     event?: string;
+    mode?: string;
   }) {
-    const where: any = {};
+    const where: any = { mode: opts.mode ?? this.config.getMode() };
     if (opts.category) where.category = opts.category;
     if (opts.level)    where.level    = opts.level;
     if (opts.symbol)   where.symbol   = opts.symbol;

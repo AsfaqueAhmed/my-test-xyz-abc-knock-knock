@@ -1,16 +1,21 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { BotConfigService } from '../config/bot-config.service';
 
 @Injectable()
 export class AnalyticsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly config: BotConfigService,
+  ) {}
 
   async getEquityCurve(days = 30) {
+    const mode = this.config.getMode();
     const since = new Date();
     since.setDate(since.getDate() - days);
-    
+
     const stats = await this.prisma.performanceStat.findMany({
-      where: { date: { gte: since } },
+      where: { mode, date: { gte: since } },
       orderBy: { date: 'asc' },
     });
 
@@ -22,21 +27,11 @@ export class AnalyticsService {
   }
 
   async getSummaryStats() {
-    const trades = await this.prisma.tradeHistory.findMany();
-    
+    const mode = this.config.getMode();
+    const trades = await this.prisma.tradeHistory.findMany({ where: { mode } });
+
     if (trades.length === 0) {
-      return {
-        totalTrades: 0,
-        winRate: 0,
-        profitFactor: 0,
-        avgTrade: 0,
-        largestWinner: 0,
-        largestLoser: 0,
-        totalPnl: 0,
-        totalFees: 0,
-        avgDuration: 0,
-        sharpeRatio: 0,
-      };
+      return { totalTrades: 0, winRate: 0, profitFactor: 0, avgTrade: 0, largestWinner: 0, largestLoser: 0, totalPnl: 0, totalFees: 0, avgDuration: 0 };
     }
 
     const wins = trades.filter(t => t.pnl > 0);
@@ -48,7 +43,7 @@ export class AnalyticsService {
 
     return {
       totalTrades: trades.length,
-      winRate: trades.length > 0 ? (wins.length / trades.length) * 100 : 0,
+      winRate: (wins.length / trades.length) * 100,
       profitFactor: grossLoss > 0 ? grossWin / grossLoss : grossWin > 0 ? 999 : 0,
       avgTrade: totalPnl / trades.length,
       largestWinner: wins.length > 0 ? Math.max(...wins.map(t => t.pnl)) : 0,
@@ -60,9 +55,10 @@ export class AnalyticsService {
   }
 
   async getRecentTrades(period: 'today' | 'week' | 'month' | 'all' = 'week') {
+    const mode = this.config.getMode();
     let since: Date | undefined;
     const now = new Date();
-    
+
     if (period === 'today') {
       since = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     } else if (period === 'week') {
@@ -72,18 +68,19 @@ export class AnalyticsService {
     }
 
     return this.prisma.tradeHistory.findMany({
-      where: since ? { exitTime: { gte: since } } : undefined,
+      where: { mode, ...(since ? { exitTime: { gte: since } } : {}) },
       orderBy: { exitTime: 'desc' },
       take: 200,
     });
   }
 
   async getDailyPnl(days = 30) {
+    const mode = this.config.getMode();
     const since = new Date();
     since.setDate(since.getDate() - days);
-    
+
     return this.prisma.performanceStat.findMany({
-      where: { date: { gte: since } },
+      where: { mode, date: { gte: since } },
       orderBy: { date: 'asc' },
       select: { date: true, dailyPnl: true, totalTrades: true, winningTrades: true },
     });
@@ -93,7 +90,7 @@ export class AnalyticsService {
     const stats = await this.getEquityCurve(days);
     let peak = 0;
     let maxDrawdown = 0;
-    
+
     return stats.map(s => {
       if (s.equity > peak) peak = s.equity;
       const dd = peak > 0 ? ((peak - s.equity) / peak) * 100 : 0;

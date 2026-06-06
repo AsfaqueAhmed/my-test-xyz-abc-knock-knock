@@ -1,4 +1,4 @@
-import { Injectable, OnModuleInit, Logger } from '@nestjs/common';
+import { Injectable, OnModuleInit, Logger, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 
 export interface BotConfiguration {
@@ -57,6 +57,11 @@ export interface BotConfiguration {
   replacementEnabled: boolean;
   exposureCheckEnabled: boolean;
 
+  // Exchange credentials (stored encrypted in DB; never logged)
+  binanceApiKey: string;
+  binanceApiSecret: string;
+  binanceTestnet: boolean;
+
   paperTrading: boolean;
   tradingEnabled: boolean;
   botRunning: boolean;
@@ -107,6 +112,10 @@ const DEFAULTS: BotConfiguration = {
   replacementEnabled: true,
   exposureCheckEnabled: true,
 
+  binanceApiKey: '',
+  binanceApiSecret: '',
+  binanceTestnet: false,
+
   paperTrading: true,
   tradingEnabled: false,
   botRunning: false,
@@ -132,6 +141,7 @@ export class BotConfigService implements OnModuleInit {
 
       const num  = (k: string, d: number)  => map[k] !== undefined ? parseFloat(map[k]) : d;
       const bool = (k: string, d: boolean) => map[k] !== undefined ? map[k] === 'true' : d;
+      const str  = (k: string, d: string)  => map[k] !== undefined ? map[k] : d;
 
       this.config = {
         maxActivePositions: num('maxActivePositions', DEFAULTS.maxActivePositions),
@@ -175,6 +185,10 @@ export class BotConfigService implements OnModuleInit {
         replacementEnabled: bool('replacementEnabled', DEFAULTS.replacementEnabled),
         exposureCheckEnabled: bool('exposureCheckEnabled', DEFAULTS.exposureCheckEnabled),
 
+        binanceApiKey:    str('binanceApiKey',    DEFAULTS.binanceApiKey),
+        binanceApiSecret: str('binanceApiSecret', DEFAULTS.binanceApiSecret),
+        binanceTestnet:   bool('binanceTestnet',  DEFAULTS.binanceTestnet),
+
         paperTrading: bool('paperTrading', DEFAULTS.paperTrading),
         tradingEnabled: bool('tradingEnabled', DEFAULTS.tradingEnabled),
         botRunning: bool('botRunning', DEFAULTS.botRunning),
@@ -187,9 +201,39 @@ export class BotConfigService implements OnModuleInit {
 
   get(): BotConfiguration { return { ...this.config }; }
 
+  getMode(): 'PAPER' | 'TESTNET' | 'LIVE' {
+    if (this.config.paperTrading)   return 'PAPER';
+    if (this.config.binanceTestnet) return 'TESTNET';
+    return 'LIVE';
+  }
+
   async update(partial: Partial<BotConfiguration>): Promise<BotConfiguration> {
-    this.config = { ...this.config, ...partial };
-    for (const [key, value] of Object.entries(partial)) {
+    // Strip computed/read-only fields and masked credential placeholders that
+    // the frontend echoes back on every save — storing them would corrupt the
+    // real keys or pollute the config table with unknown keys.
+    const sanitized: Partial<BotConfiguration & { binanceKeysSet?: unknown }> = { ...partial };
+    delete sanitized.binanceKeysSet;
+    if (sanitized.binanceApiKey?.includes('*'))      delete sanitized.binanceApiKey;
+    if (sanitized.binanceApiSecret === '***hidden***') delete sanitized.binanceApiSecret;
+
+    // Block disabling paper trading unless real API credentials are present
+    if (sanitized.paperTrading === false) {
+      const merged = { ...this.config, ...sanitized };
+      if (!merged.binanceApiKey || !merged.binanceApiSecret) {
+        throw new BadRequestException(
+          'Cannot switch to live trading: binanceApiKey and binanceApiSecret must be configured first'
+        );
+      }
+    }
+
+    // Never log API credentials
+    const loggable = Object.keys(sanitized).filter(k => k !== 'binanceApiKey' && k !== 'binanceApiSecret');
+    if (loggable.length > 0) {
+      this.logger.log(`Config updated: ${loggable.join(', ')}`);
+    }
+
+    this.config = { ...this.config, ...sanitized };
+    for (const [key, value] of Object.entries(sanitized)) {
       const strValue = typeof value === 'object' ? JSON.stringify(value) : String(value);
       await this.prisma.botConfig.upsert({
         where: { key },
