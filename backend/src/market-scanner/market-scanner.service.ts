@@ -51,16 +51,22 @@ export class MarketScannerService implements OnModuleInit, OnModuleDestroy {
 
   // ─── Symbol Discovery ─────────────────────────────────────────────────────
 
+  private httpsGet(url: string, timeoutMs = 8000): Promise<string> {
+    const https = require('https');
+    return new Promise<string>((resolve, reject) => {
+      const req = https.get(url, (res: any) => {
+        let d = '';
+        res.on('data', (c: any) => d += c);
+        res.on('end', () => resolve(d));
+      });
+      req.on('error', reject);
+      req.setTimeout(timeoutMs, () => req.destroy(new Error('Request timed out')));
+    });
+  }
+
   private async fetchAllSymbols() {
     try {
-      const https = require('https');
-      const data = await new Promise<string>((resolve, reject) => {
-        https.get('https://fapi.binance.com/fapi/v1/exchangeInfo', (res: any) => {
-          let d = '';
-          res.on('data', (c: any) => d += c);
-          res.on('end', () => resolve(d));
-        }).on('error', reject);
-      });
+      const data = await this.httpsGet('https://fapi.binance.com/fapi/v1/exchangeInfo');
       const json = JSON.parse(data);
       const symbols = json.symbols
         .filter((s: any) =>
@@ -125,13 +131,8 @@ export class MarketScannerService implements OnModuleInit, OnModuleDestroy {
       const batch = symbols.slice(i, i + BATCH);
       await Promise.all(batch.map(async (symbol) => {
         try {
-          const https = require('https');
           const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=1m&limit=31`;
-          const raw = await new Promise<string>((resolve, reject) => {
-            https.get(url, (res: any) => {
-              let d = ''; res.on('data', (c: any) => d += c); res.on('end', () => resolve(d));
-            }).on('error', reject);
-          });
+          const raw = await this.httpsGet(url);
           const klines = JSON.parse(raw);
           if (!Array.isArray(klines)) return;
 
@@ -180,14 +181,7 @@ export class MarketScannerService implements OnModuleInit, OnModuleDestroy {
 
   private async fetchTickerSnapshot() {
     try {
-      const https = require('https');
-      const data = await new Promise<string>((resolve, reject) => {
-        https.get('https://fapi.binance.com/fapi/v1/ticker/24hr', (res: any) => {
-          let d = '';
-          res.on('data', (c: any) => d += c);
-          res.on('end', () => resolve(d));
-        }).on('error', reject);
-      });
+      const data = await this.httpsGet('https://fapi.binance.com/fapi/v1/ticker/24hr');
       const json = JSON.parse(data);
       if (!Array.isArray(json)) return;
 
